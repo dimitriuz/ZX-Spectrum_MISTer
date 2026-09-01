@@ -2,13 +2,13 @@
 # Compile + run the Icarus Verilog simulation in Docker (image xzs-sim:1.0, see sim/Dockerfile).
 # Usage: ./sim/run_sim.sh [testname] [stop-ns] [regfile]
 #   testname  TB test to run (default: smoke); passed as +TEST=<name>
-#   stop-ns   watchdog in sim-time ns (default: 20000000 = 20 ms); passed as +STOPNS=<n>
+#   stop-ns   watchdog in sim-time ns (default: 300000000 = 300 ms; download-based tests need >20 ms); passed as +STOPNS=<n>
 #   regfile   output file for the regression test (default: sim/out/regression_new.txt)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TEST="${1:-smoke}"
-STOPNS="${2:-20000000}"
+STOPNS="${2:-300000000}"
 REGFILE="${3:-sim/out/regression_new.txt}"
 
 # jt12's $readmemh uses bare filenames resolved against CWD - stage them at repo root

@@ -37,3 +37,9 @@ c5_pin_model_dump.txt
 *.xml
 *_netlist
 *.cdf
+
+# sim build artifacts
+sim/work.vvp
+sim/compile_err.log
+lfo_sh*_lut.hex
+/.superpowers/

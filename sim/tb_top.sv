@@ -280,6 +280,23 @@ module tb_top;
             repeat (8) @(posedge tb_clksys);
         end
     endtask
+    // Force one M1 fetch cycle at address a (used to trigger M1-edge latches such as
+    // trdos_en, which the fetch-loop stub never reaches on its own).
+    task force_m1(input [15:0] a);
+        integer i;
+        begin
+            i = 0;
+            while (dut.m1 === 1'b1 && i < 32) begin @(posedge tb_clksys); i = i + 1; end
+            force dut.nM1   = 1'b0;
+            force dut.nMREQ = 1'b0;
+            force dut.addr  = a;
+            repeat (2) @(posedge tb_clksys);
+            release dut.nM1;
+            release dut.nMREQ;
+            release dut.addr;
+            repeat (8) @(posedge tb_clksys);
+        end
+    endtask
 
     // CPU memory write at address a: force the bus like a Z80 M-cycle write.
     task mem_write(input [15:0] a, input [7:0] v);
@@ -549,16 +566,19 @@ module tb_top;
             if (dut.vram.altsyncram_component.mem[15'h4000][7:0] !== 8'h5A) begin $display("PAGING FAIL vram non-mirror page0 half1"); $finish; end
             mem_write(16'h4010, 8'hC3);                     // #4000 always bank 5 -> dpram[0x0010]
             if (dut.vram.altsyncram_component.mem[15'd16][7:0] !== 8'hC3) begin $display("PAGING FAIL vram mirror #4000"); $finish; end
-            // paging register readback: #7FFD returns the effective page, #1FFD its own byte
-            io_write(16'h7FFD, 8'h05);
-            io_read(16'h7FFD, d);
-            if (d !== 8'h05) begin $display("PAGING FAIL #7FFD readback got=%h want=5", d); $finish; end
-            io_write(16'h1FFD, 8'h10);                       // upper page bit set -> effective page 13
-            io_read(16'h7FFD, d);
-            if (d !== 8'h0D) begin $display("PAGING FAIL #7FFD readback upper got=%h want=d", d); $finish; end
+            // Port read conformance (speccy-bootcamp): #7FFD is write-only (no assertion -
+            // floating bus); #1FFD reads return #FF on non-Turbo boards.
             io_read(16'h1FFD, d);
-            if (d !== 8'h10) begin $display("PAGING FAIL #1FFD readback got=%h want=10", d); $finish; end
-            io_write(16'h1FFD, 8'h00);                       // restore
+            if (d !== 8'hFF) begin $display("PAGING FAIL #1FFD read got=%h want=ff", d); $finish; end
+            // Bit-5 lockout: OUT (#7FFD),%00100000 blocks further paging writes until reset.
+            io_write(16'h7FFD, 8'h25);      // page 5 + lock bit (this write still applies)
+            io_write(16'h7FFD, 8'h03);      // must be ignored (locked)
+            io_write(16'h1FFD, 8'h10);      // must be ignored (locked)
+            cpu_read(16'hE000, d);         // still bank 5 (off 0x2000): page stayed 5, upper bit stayed 0
+            want = 5 * 7 + 4;
+            if (d !== want) begin $display("PAGING FAIL lockout #E000 got=%h want=%h", d, want[7:0]); $finish; end
+            if (dut.page_reg !== 8'h25) begin $display("PAGING FAIL lockout page_reg got=%h want=25", dut.page_reg); $finish; end
+            if (dut.scorp_1ffd !== 8'h00) begin $display("PAGING FAIL lockout scorp_1ffd got=%h want=0", dut.scorp_1ffd); $finish; end
             $display("PAGING PASS");
         end
     endtask
@@ -566,7 +586,7 @@ module tb_top;
     // default ROM0 -> #7FFD[4]=1 ROM1 -> #1FFD[1] Shadow -> #1FFD[0] RAM bank 0
     // (written through the window) -> clear both -> ROM0.
     task test_romchain;
-        reg [7:0] d, e0, e1, e2;
+        reg [7:0] d, e0, e1, e2, e3;
         reg [7:0] romexp [0:262143];
         begin
             $readmemh("sim/roms/synthetic_boot.hex", romexp);
@@ -591,6 +611,14 @@ module tb_top;
             io_write(16'h7FFD, 8'h00);
             cpu_read(16'h0000, d);
             if (d !== e0) begin $display("ROMCHAIN FAIL step5 got=%h want=%h", d, e0); $finish; end
+            // TR-DOS ROM3: an M1 fetch at #3Dxx latches trdos_en -> page_rom=3 (column 35),
+            // the core's emulation of the Beta 128 FDC ROMCS path.
+            e3 = romexp[20'h3C000];
+            force_m1(16'h3D00);
+            if (dut.page_rom !== 4'd3) begin $display("ROMCHAIN FAIL trdos page_rom got=%d want=3", dut.page_rom); $finish; end
+            cpu_read(16'h0000, d);
+            if (d !== e3) begin $display("ROMCHAIN FAIL trdos #0000 got=%h want=%h", d, e3); $finish; end
+            force_m1(16'hC000);             // clear trdos_en (M1 with addr[15:14]=11)
             $display("ROMCHAIN PASS");
         end
     endtask

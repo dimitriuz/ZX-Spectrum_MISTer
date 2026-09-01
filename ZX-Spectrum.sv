@@ -372,8 +372,7 @@ T80pa cpu
 wire [7:0] cpu_din =  
 		~nMREQ   ? (tape_dout_en ? tape_dout : ram_dout)      :
 		~io_rd   ? port_ff                                    :
-		(scorp & (addr[14:0] == 15'h1FFD)) ? scorp_1ffd               :
-		(scorp & (addr[14:0] == 15'h7FFD)) ? {4'b0, scorp_page}       :
+		(scorp & (addr[14:0] == 15'h1FFD)) ? 8'hFF                  : // non-Turbo base model: #1FFD reads return #FF (#7FFD is write-only)
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
 		mmc_sel  ? mmc_dout                                   :
@@ -502,6 +501,7 @@ wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
 wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
 wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
+wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further paging writes until reset
 reg  [2:0] page_128k;
 
 reg  [3:0] page_rom;
@@ -567,9 +567,9 @@ always @(posedge clk_sys) begin
 			if(m1 && ~old_m1 && ~plusd_en && ~mod[0] && (addr == 'h66) && ~plus3) shadow_rom <= 1; 
 
 			if(io_wr & ~old_wr) begin
-				if(scorp_1ffd_wr) begin
+				if(scorp_1ffd_wr & ~scorp_lock) begin
 					scorp_1ffd <= cpu_dout;
-				end else if(page_write) begin
+				end else if(page_write & ~scorp_lock) begin
 					page_reg  <= cpu_dout;
 					if(p1024 & ~page_reg_p1024[2]) page_128k[2:0] <= { cpu_dout[5], cpu_dout[7:6] };
 					if(~plusd_mem) page_scr_copy <= cpu_dout[3];

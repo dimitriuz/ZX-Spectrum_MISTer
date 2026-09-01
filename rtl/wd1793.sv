@@ -90,6 +90,8 @@ reg  [19:0] buff_a;
 reg   [1:0] wd_size_code;
 
 wire  [7:0] buff_dout;
+reg         buff_wr;   // declared at module scope (used outside the RWMODE generate branch)
+reg  [7:0] spt_addr;   // declared at module scope (assigned outside the EDSK generate branch)
 reg   [1:0] sd_block = 0;
 reg         format;
 generate
@@ -108,7 +110,6 @@ generate
 			.wren_b(wre & buff_wr & (addr == A_DATA) & ~scan_active),
 			.q_b(buff_dout)
 		);
-		reg buff_wr;
 	end else begin
 		assign buff_dout   = 0;
 		assign sd_buff_din = 0;
@@ -772,7 +773,6 @@ generate
 		reg [53:0] edsk[1992];
 		reg  [7:0] spt[166];
 
-		reg  [7:0] spt_addr;
 		always @(posedge clk_sys) begin
 			{edsk_track,edsk_side,edsk_trackf,edsk_sidef,edsk_sector,edsk_sizecode,edsk_offset} <= edsk[edsk_addr];
 			edsk_spt <= spt[spt_addr];

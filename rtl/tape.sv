@@ -54,11 +54,12 @@ module tape
 
 	input         rd_en,
 	output        rd,
-	output [24:0] addr,
+	output reg [24:0] addr,
 	input   [7:0] din
 );
 
 localparam  CLOCK = 32'd3500000;
+reg         tzx_ack;   // declared before tzxplayer instance (first reference) for tool portability
 
 tzxplayer #(.TZX_MS(CLOCK/1000)) tzxplayer
 (
@@ -91,7 +92,6 @@ reg         play_pause;
 reg  [7:0]  din_r;
 wire        tzx_audio;
 wire        tzx_req;
-reg         tzx_ack;
 wire        tzx_loop_start;
 wire        tzx_loop_next;
 wire        tzx_stop;
@@ -231,7 +231,7 @@ always @(posedge clk_sys) begin
 		skip     <= 0;
 		turboskip <= 0;
 		auto_blk <= 0;
-		blk_list <= '{default:0};
+		for (integer i = 0; i < 128; i++) blk_list[i] <= 25'd0;
 		blk_num  <= 0;
 		blk_pending <= 0;
 		rd_req   <= 0;
@@ -498,7 +498,13 @@ assign led     = act_cnt[24] ? act_cnt[23:16] > act_cnt[7:0] : act_cnt[23:16] <=
 reg [24:0] act_cnt;
 always @(posedge clk_sys) if(active || ~(available ^ act_cnt[24]) || act_cnt[23:0]) act_cnt <= act_cnt + 1'd1;
 
-reg  [7:0] tape_stub[14] = '{'h18, 'hFE, 'h2E, 'hFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+reg  [7:0] tape_stub[14];
+initial begin
+	tape_stub[0] <= 'h18; tape_stub[1] <= 'hFE; tape_stub[2] <= 'h2E; tape_stub[3] <= 'hFF;
+	tape_stub[4] <= 0; tape_stub[5] <= 0; tape_stub[6] <= 0; tape_stub[7] <= 0;
+	tape_stub[8] <= 0; tape_stub[9] <= 0; tape_stub[10] <= 0; tape_stub[11] <= 0;
+	tape_stub[12] <= 0; tape_stub[13] <= 0;
+end
 wire [7:0] tape_dout;
 reg  [1:0] tape_mode_reg;
 

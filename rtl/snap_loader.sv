@@ -34,7 +34,7 @@ module snap_loader #(parameter ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128)
 	output [211:0] REG,
 	output         REGSet,
 
-	output  [24:0] addr,
+	output  reg [24:0] addr,
 	output   [7:0] dout,
 	output         wr,
 
@@ -188,9 +188,9 @@ reg         snap_REGSet;
 reg         snap_wait = 0;
 wire [24:0] snap_addr;
 reg   [7:0] snap_data;
-reg         snap_wr;
+reg         snap_wr = 0;
 
-reg         snap_reset;
+reg         snap_reset = 0;
 reg         snap_hwset;
 reg   [4:0] snap_hw;
 reg  [31:0] snap_status;

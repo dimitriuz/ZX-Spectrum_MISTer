@@ -107,11 +107,11 @@ wire [21:0] out0;
 saa1099_triplet top
 (
 	.*,
-	.vol('{amplit0, amplit1, amplit2}),
+	.vol({amplit0, amplit1, amplit2}),
 	.env(envelope0),
 
-	.freq('{freq0, freq1, freq2}),
-	.octave('{oct10[2:0], oct10[6:4], oct32[2:0]}),
+	.freq({freq0, freq1, freq2}),
+	.octave({oct10[2:0], oct10[6:4], oct32[2:0]}),
 	.freq_en(freqenable[2:0]),
 
 	.noise_en(noiseenable[2:0]),
@@ -127,11 +127,11 @@ wire [21:0] out1;
 saa1099_triplet bottom
 (
 	.*,
-	.vol('{amplit3, amplit4, amplit5}),
+	.vol({amplit3, amplit4, amplit5}),
 	.env(envelope1),
 
-	.freq('{freq3, freq4, freq5}),
-	.octave('{oct32[6:4], oct54[2:0], oct54[6:4]}),
+	.freq({freq3, freq4, freq5}),
+	.octave({oct32[6:4], oct54[2:0], oct54[6:4]}),
 	.freq_en(freqenable[5:3]),
 
 	.noise_en(noiseenable[5:3]),
@@ -155,11 +155,11 @@ module saa1099_triplet
 	input        clk_sys,
 	input        ce,
 
-	input  [7:0] vol[3],
+	input  [23:0] vol,      // {vol0, vol1, vol2} - packed for tool portability
 	input  [7:0] env,
 
-	input  [7:0] freq[3],
-	input  [2:0] octave[3],
+	input  [23:0] freq,     // {freq0, freq1, freq2} - packed for tool portability
+	input  [8:0]  octave,   // {octave0, octave1, octave2} - packed for tool portability
 	input  [2:0] freq_en,
 
 	input  [2:0] noise_en,
@@ -175,14 +175,14 @@ wire       tone0, tone1, tone2, noise;
 wire       pulse_noise, pulse_envelope;
 wire[21:0] out0, out1, out2;
 
-saa1099_tone  freq_gen0(.*, .out(tone0), .octave(octave[0]), .freq(freq[0]), .pulse(pulse_noise));
-saa1099_tone  freq_gen1(.*, .out(tone1), .octave(octave[1]), .freq(freq[1]), .pulse(pulse_envelope));
-saa1099_tone  freq_gen2(.*, .out(tone2), .octave(octave[2]), .freq(freq[2]), .pulse());
+saa1099_tone  freq_gen0(.*, .out(tone0), .octave(octave[8:6]), .freq(freq[23:16]), .pulse(pulse_noise));
+saa1099_tone  freq_gen1(.*, .out(tone1), .octave(octave[5:3]), .freq(freq[15:8]), .pulse(pulse_envelope));
+saa1099_tone  freq_gen2(.*, .out(tone2), .octave(octave[2:0]), .freq(freq[7:0]), .pulse());
 saa1099_noise noise_gen(.*, .out(noise));
 
-saa1099_amp amp0(.*, .mixmode({noise_en[0], freq_en[0]}), .tone(tone0), .envreg(0),   .vol(vol[0]), .out(out0));
-saa1099_amp amp1(.*, .mixmode({noise_en[1], freq_en[1]}), .tone(tone1), .envreg(0),   .vol(vol[1]), .out(out1));
-saa1099_amp amp2(.*, .mixmode({noise_en[2], freq_en[2]}), .tone(tone2), .envreg(env), .vol(vol[2]), .out(out2));
+saa1099_amp amp0(.*, .mixmode({noise_en[0], freq_en[0]}), .tone(tone0), .envreg(0),   .vol(vol[23:16]), .out(out0));
+saa1099_amp amp1(.*, .mixmode({noise_en[1], freq_en[1]}), .tone(tone1), .envreg(0),   .vol(vol[15:8]), .out(out1));
+saa1099_amp amp2(.*, .mixmode({noise_en[2], freq_en[2]}), .tone(tone2), .envreg(env), .vol(vol[7:0]), .out(out2));
 
 assign out[10:0]  = out0[8:0]  + out1[8:0]  + out2[8:0];
 assign out[21:11] = out0[17:9] + out1[17:9] + out2[17:9];
@@ -280,15 +280,38 @@ module saa1099_amp
 	output reg [17:0] out
 );
 
-wire       phases[8] = '{0,0,0,0,1,1,0,0};
-wire [1:0] env[8][2] = '{'{0,0}, '{1,1}, '{2,0}, '{2,0}, '{3,2}, '{3,2}, '{3,0}, '{3,0}};
-wire [3:0] levels[4][16] = 
-'{
-	'{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-	'{15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15},
-	'{15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0},
-	'{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15}
-};
+// Constant lookup tables (case functions for tool portability)
+function       phases_lut;
+	input [2:0] i;
+	begin
+		phases_lut = (i == 4 || i == 5);
+	end
+endfunction
+
+function [1:0] env_lut;
+	input [2:0] i;
+	begin
+		case(i)
+			3'd0:          env_lut = 2'b00;
+			3'd1:          env_lut = 2'b01;
+			3'd2, 3'd3:    env_lut = 2'b10;
+			default:       env_lut = 2'b11;   // shapes 4..7
+		endcase
+	end
+endfunction
+
+function [3:0] level_lut;
+	input [1:0] row;
+	input [3:0] col;
+	begin
+		case(row)
+			2'd0:        level_lut = 4'd0;
+			2'd1:        level_lut = 4'd15;
+			2'd2:        level_lut = 4'd15 - col;
+			default:     level_lut = col;
+		endcase
+	end
+endfunction
 
 reg [2:0] shape;
 reg       stereo;
@@ -315,7 +338,7 @@ always @(posedge clk_sys) begin
 		if(clock ? wr_addr : pulse_envelope) begin  // pulse from internal or external clock?
 			counter <= counter + resolution + 1'd1;
 			if((counter | mask) == 15) begin
-				if(phase >= phases[shape]) begin
+				if(phase >= phases_lut(shape)) begin
 					if(~shape[0]) counter <= 15;
 					if(new_data | shape[0]) begin // if we reached one of the designated points (3) or (4) and there is pending data, load it
 						new_data <= 0;
@@ -333,7 +356,8 @@ always @(posedge clk_sys) begin
 	end
 end
 
-wire [3:0] env_l = levels[env[shape][phase]][counter] & ~mask;
+wire [1:0] env_idx = env_lut(shape);
+wire [3:0] env_l = level_lut(env_idx[phase], counter) & ~mask;
 wire [3:0] env_r = stereo ? (4'd15 & ~mask) - env_l : env_l; // bit 0 of envreg inverts envelope shape
 
 reg  [1:0] outmix;

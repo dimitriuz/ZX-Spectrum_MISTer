@@ -220,8 +220,14 @@ always @(posedge clk_sys) begin
 end
 
 wire [7:0] hipalette[8];
-assign hipalette = '{8'b01111000, 8'b01110001, 8'b01101010, 8'b01100011, 
-                     8'b01011100, 8'b01010101, 8'b01001110, 8'b01000111};
+assign hipalette[0] = 8'b01111000;
+assign hipalette[1] = 8'b01110001;
+assign hipalette[2] = 8'b01101010;
+assign hipalette[3] = 8'b01100011;
+assign hipalette[4] = 8'b01011100;
+assign hipalette[5] = 8'b01010101;
+assign hipalette[6] = 8'b01001110;
+assign hipalette[7] = 8'b01000111;
 
 reg        INT    = 0;
 reg  [6:0] INTCnt = 1;
@@ -302,7 +308,7 @@ always @(posedge clk_sys) begin
 
 	if(reset) begin
 		{ulap_ena, tmx_ena, tmx_using_ff, tmx_cfg} <= 0;
-		palette <= '{default:0};
+		for (integer i = 0; i < 64; i++) palette[i] <= 8'd0;
 	end else if(~old_wr & io_wr) begin
 		if(ulap_acc & ulap_avail) begin
 			if(addr[14]) begin

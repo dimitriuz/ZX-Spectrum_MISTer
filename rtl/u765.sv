@@ -47,7 +47,7 @@ module u765 #(parameter CYCLES = 20'd4000, SPECCY_SPEEDLOCK_HACK = 0)
 	input      [1:0] img_mounted, // signaling that new image has been mounted
 	input            img_wp,      // write protect. latched at img_mounted
 	input     [31:0] img_size,    // size of image in bytes
-	output    [31:0] sd_lba,
+	output    reg [31:0] sd_lba,
 	output reg [1:0] sd_rd,
 	output reg [1:0] sd_wr,
 	input            sd_ack,
@@ -190,7 +190,7 @@ end
 
 wire       rd = nWR & ~nRD;
 wire       wr = ~nWR & nRD;
-wire [7:0] i_total_sectors;
+reg  [7:0] i_total_sectors;
 
 reg  [7:0] m_status;  //main status register
 reg  [7:0] m_data;    //data register
@@ -203,16 +203,16 @@ always @(posedge clk_sys) begin
 
 	//per-drive data
 	reg[31:0] image_size[2];
-	reg       image_ready[2] = '{ 0, 0 };
+	reg       image_ready[2];
 	reg [7:0] image_tracks[2];
 	reg       image_sides[2]; //1 side - 0, 2 sides - 1
 	reg [1:0] image_wp;
 	reg       image_trackinfo_dirty[2];
 	reg       image_edsk[2]; //DSK - 0, EDSK - 1
-	reg [1:0] image_scan_state[2] = '{ 0, 0 };
+	reg [1:0] image_scan_state[2];
 	reg [7:0] i_current_track_sectors[2][2];  //number of sectors on the current track /head/drive
 	reg [7:0] i_current_sector_pos[2][2]; //sector where the head currently positioned
-	reg[19:0] i_rpm_time[2][2] = '{'{CYCLES,CYCLES}, '{CYCLES,CYCLES}};
+	reg[19:0] i_rpm_time[2][2];
 	reg[19:0] i_steptimer[2], i_rpm_timer[2][2];
 	reg [3:0] i_step_state[2]; //counting cycles for steptimer
 
@@ -239,7 +239,7 @@ always @(posedge clk_sys) begin
 	reg [19:0] i_timeout;
 	reg [7:0] i_head_timer;
 	reg i_rtrack, i_write, i_rw_deleted;
-	reg [7:0] status[4] = '{0, 0, 0, 0}; //st0-3
+	reg [7:0] status[4]; //st0-3
 	state_t state, i_command;
    reg i_current_drive, i_scan_lock = 0;
 	reg [3:0] i_srt; //stepping rate
@@ -275,7 +275,8 @@ always @(posedge clk_sys) begin
 			int_state[i] <= 0;
 			seek_state[i] <= 0;
 			next_weak_sector[i] <= 0;
-			i_current_sector_pos[i] <= '{ 0, 0 };
+			i_current_sector_pos[i][0] <= 8'h00;
+			i_current_sector_pos[i][1] <= 8'h00;
 		end
 	end
 
@@ -352,14 +353,17 @@ always @(posedge clk_sys) begin
 		status[0] <= 0;
 		status[1] <= 0;
 		status[2] <= 0;
-		ncn <= '{ 0, 0 };
-		pcn <= '{ 0, 0 };
-		int_state <= '{ 0, 0 };
-		seek_state <= '{ 0, 0 };
-		image_trackinfo_dirty <= '{ 1, 1 };
+		ncn[0] <= 8'h00; ncn[1] <= 8'h00;
+		pcn[0] <= 8'h00; pcn[1] <= 8'h00;
+		int_state[0] <= 1'b0; int_state[1] <= 1'b0;
+		seek_state[0] <= 2'b00; seek_state[1] <= 2'b00;
+		image_trackinfo_dirty[0] <= 1'b1; image_trackinfo_dirty[1] <= 1'b1;
 		{ ack, sd_busy } <= 0;
 		sd_rd <= 0;
 		sd_wr <= 0;
+		image_ready[0] <= 0; image_ready[1] <= 0;
+		i_rpm_time[0][0] <= CYCLES; i_rpm_time[0][1] <= CYCLES;
+		i_rpm_time[1][0] <= CYCLES; i_rpm_time[1][1] <= CYCLES;
 		image_track_offsets_wr <= 0;
 		//restart "mounting" of image(s)
 		if (image_scan_state[0]) image_scan_state[0] <= 1;
@@ -488,7 +492,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_SENSE_DRIVE_STATUS:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 					state <= COMMAND_SENSE_DRIVE_STATUS_RD;
 					m_status[UPD765_MAIN_DIO] <= 1;
@@ -511,7 +515,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_SPECIFY:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 //					i_hut <= din[3:0];
 					i_srt <= din[7:4];
@@ -559,7 +563,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_READ_ID:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				state <= COMMAND_READ_ID1;
 			end
 
@@ -630,7 +634,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_READ_TRACK:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				i_command <= COMMAND_RW_DATA_EXEC;
 				state <= COMMAND_SETUP;
 				{i_rtrack, i_write, i_rw_deleted} <= 3'b100;
@@ -638,7 +642,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_WRITE_DATA:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				i_command <= COMMAND_RW_DATA_EXEC;
 				state <= COMMAND_SETUP;
 				{i_rtrack, i_write, i_rw_deleted} <= 3'b010;
@@ -646,7 +650,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_WRITE_DELETED_DATA:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				i_command <= COMMAND_RW_DATA_EXEC;
 				state <= COMMAND_SETUP;
 				{i_rtrack, i_write, i_rw_deleted} <= 3'b011;
@@ -654,7 +658,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_READ_DATA:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				i_command <= COMMAND_RW_DATA_EXEC;
 				state <= COMMAND_SETUP;
 				{i_rtrack, i_write, i_rw_deleted} <= 3'b000;
@@ -662,7 +666,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_READ_DELETED_DATA:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				i_command <= COMMAND_RW_DATA_EXEC;
 				state <= COMMAND_SETUP;
 				{i_rtrack, i_write, i_rw_deleted} <= 3'b001;
@@ -910,7 +914,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_FORMAT_TRACK:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 					ds0 <= din[0];
 					state <= COMMAND_FORMAT_TRACK1;
@@ -976,7 +980,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_SCAN_EQUAL:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 					state <= COMMAND_IDLE;
 				end
@@ -984,7 +988,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_SCAN_HIGH_OR_EQUAL:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 					state <= COMMAND_IDLE;
 				end
@@ -992,7 +996,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_SCAN_LOW_OR_EQUAL:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				if (~old_wr & wr & a0) begin
 					state <= COMMAND_IDLE;
 				end
@@ -1092,7 +1096,7 @@ always @(posedge clk_sys) begin
 
 			COMMAND_INVALID:
 			begin
-				int_state <= '{ 0, 0 };
+				int_state[0] <= 1'b0; int_state[1] <= 1'b0;
 				m_status[UPD765_MAIN_DIO] <= 1;
 				status[0] <= 8'h80;
 				state <= COMMAND_INVALID1;
@@ -1106,7 +1110,8 @@ always @(posedge clk_sys) begin
 
 			COMMAND_RELOAD_TRACKINFO:
 			if (image_ready[ds0] & image_trackinfo_dirty[ds0]) begin
-				i_rpm_timer[ds0] <= '{ 0, 0 };
+				i_rpm_timer[ds0][0] <= 20'h0;
+				i_rpm_timer[ds0][1] <= 20'h0;
 				next_weak_sector[ds0] <= 0;
 				image_track_offsets_addr <= { pcn[ds0], 1'b0 };
 				old_hds <= hds;

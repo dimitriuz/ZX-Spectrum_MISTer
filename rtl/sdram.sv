@@ -32,7 +32,7 @@ module sdram
    input             clk,         // clock ~100MHz
                                   //
                                   // SDRAM_* - signals to the MT48LC16M16 chip
-   inout  reg [15:0] SDRAM_DQ,    // 16 bit bidirectional data bus
+   inout  wire [15:0] SDRAM_DQ,    // 16 bit bidirectional data bus
    output reg [12:0] SDRAM_A,     // 13 bit multiplexed address bus
    output reg        SDRAM_DQML,  // two byte masks
    output reg        SDRAM_DQMH,  // 
@@ -58,6 +58,13 @@ assign SDRAM_nRAS = command[2];
 assign SDRAM_nCAS = command[1];
 assign SDRAM_nWE  = command[0];
 assign {SDRAM_DQMH,SDRAM_DQML} = SDRAM_A[12:11];
+
+// Bidirectional DQ handling (inout reg is not portable across sim tools)
+wire    [15:0] SDRAM_DQ_in;
+assign SDRAM_DQ_in = SDRAM_DQ;
+reg     [15:0] SDRAM_DQ_out;
+reg             SDRAM_DQ_oe;
+assign SDRAM_DQ = SDRAM_DQ_oe ? SDRAM_DQ_out : 16'bz;
 
 
 // no burst configured
@@ -107,13 +114,12 @@ always @(posedge clk) begin
 
 	state_t state = STATE_STARTUP;
 
-	SDRAM_DQ <= 16'bZ;
+	SDRAM_DQ_oe <= 1'b0;
 	command  <= CMD_NOP;
 	refresh_count  <= refresh_count+1'b1;
 
 	data_ready_delay <= {1'b0, data_ready_delay[CAS_LATENCY:1]};
-
-	if(data_ready_delay[0]) {ready, data}  <= {1'b1, SDRAM_DQ};
+	if(data_ready_delay[0]) {ready, data}  <= {1'b1, SDRAM_DQ_in};
 
 	case(state)
 		STATE_STARTUP: begin
@@ -180,7 +186,8 @@ always @(posedge clk) begin
 			SDRAM_A     <= {save_we & ~save_addr[0], save_we & save_addr[0], 2'b10, save_addr[22:14]};
 			if(save_we) begin
 				command  <= CMD_WRITE;
-				SDRAM_DQ <= {new_data[7:0], new_data[7:0]};
+				SDRAM_DQ_out <= {new_data[7:0], new_data[7:0]};
+				SDRAM_DQ_oe  <= 1'b1;
 				ready    <= 1;
 				state    <= STATE_IDLE_2;
 			end

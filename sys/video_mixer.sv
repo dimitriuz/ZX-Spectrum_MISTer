@@ -88,17 +88,10 @@ always @(posedge CLK_VIDEO) begin
 	frz  <= frz1;
 end
 
-generate
-	if(GAMMA && HALF_DEPTH) begin
-		wire [7:0] R_in  = frz ? 8'd0 : {R,R};
-		wire [7:0] G_in  = frz ? 8'd0 : {G,G};
-		wire [7:0] B_in  = frz ? 8'd0 : {B,B};
-	end else begin
-		wire [DWIDTH:0] R_in = frz ? 1'd0 : R;
-		wire [DWIDTH:0] G_in = frz ? 1'd0 : G;
-		wire [DWIDTH:0] B_in = frz ? 1'd0 : B;
-	end
-endgenerate
+// Color input selection (module-scope for tool portability; identical behavior)
+wire [7:0] R_in = frz ? 8'd0 : (GAMMA && HALF_DEPTH) ? {R,R} : (DWIDTH == 7) ? R[7:0] : {4'b0000, R};
+wire [7:0] G_in = frz ? 8'd0 : (GAMMA && HALF_DEPTH) ? {G,G} : (DWIDTH == 7) ? G[7:0] : {4'b0000, G};
+wire [7:0] B_in = frz ? 8'd0 : (GAMMA && HALF_DEPTH) ? {B,B} : (DWIDTH == 7) ? B[7:0] : {4'b0000, B};
 
 wire hs_g, vs_g;
 wire hb_g, vb_g;

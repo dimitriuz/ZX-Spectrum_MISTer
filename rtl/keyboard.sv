@@ -459,28 +459,28 @@ always @(posedge clk_sys) begin
 	end
 end
 
-reg [8:0] auto[46] = '{
-	255,
-
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,
-
-	{1'b1, 8'h59}, // right shift
-	{1'b1, 8'h11}, // alt
-	{1'b1, 8'h14}, // ctrl
-	{1'b0, 8'h3b}, // J
-	{1'b1, 8'h3b}, // J
-	{1'b0, 8'h52}, // "
-	{1'b1, 8'h52}, // "
-	0,
-	{1'b0, 8'h52}, // "
-	{1'b1, 8'h52}, // "
-	{1'b0, 8'h5a}, // enter
-	{1'b1, 8'h5a}, // enter
-	255
-};
+reg [8:0] auto[46];
+initial begin
+	auto[0] <= 255;
+	auto[1] <= 0; auto[2] <= 0; auto[3] <= 0; auto[4] <= 0; auto[5] <= 0; auto[6] <= 0; auto[7] <= 0;
+	auto[8] <= 0; auto[9] <= 0; auto[10] <= 0; auto[11] <= 0; auto[12] <= 0; auto[13] <= 0; auto[14] <= 0; auto[15] <= 0;
+	auto[16] <= 0; auto[17] <= 0; auto[18] <= 0; auto[19] <= 0; auto[20] <= 0; auto[21] <= 0; auto[22] <= 0; auto[23] <= 0;
+	auto[24] <= 0; auto[25] <= 0; auto[26] <= 0; auto[27] <= 0; auto[28] <= 0; auto[29] <= 0; auto[30] <= 0; auto[31] <= 0;
+	auto[32] <= 0;
+	auto[33] <= {1'b1, 8'h59}; // right shift
+	auto[34] <= {1'b1, 8'h11}; // alt
+	auto[35] <= {1'b1, 8'h14}; // ctrl
+	auto[36] <= {1'b0, 8'h3b}; // J
+	auto[37] <= {1'b1, 8'h3b}; // J
+	auto[38] <= {1'b0, 8'h52}; // "
+	auto[39] <= {1'b1, 8'h52}; // "
+	auto[40] <= 0;
+	auto[41] <= {1'b0, 8'h52}; // "
+	auto[42] <= {1'b1, 8'h52}; // "
+	auto[43] <= {1'b0, 8'h5a}; // enter
+	auto[44] <= {1'b1, 8'h5a}; // enter
+	auto[45] <= 255;
+end
 
 always @(posedge clk_sys) begin
 	integer div;

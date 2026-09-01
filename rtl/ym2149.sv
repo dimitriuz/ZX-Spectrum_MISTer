@@ -75,7 +75,7 @@ reg [7:0] ymreg[16];
 reg env_reset;
 always @(posedge CLK) begin
 	if(RESET) begin
-		ymreg     <= '{default:0};
+		for (integer i = 0; i < 16; i++) ymreg[i] <= 8'd0;
 		ymreg[7]  <= '1;
 		ymreg[13] <= 8'h08; // Default envelope shape: continuous sawtooth (\\\\)
 		addr      <= '0;
@@ -301,22 +301,22 @@ always @(posedge CLK) begin
 	C <= {MODE, ~((ymreg[7][2] | tone_gen_op[3]) & (ymreg[7][5] | noise_gen_op[2])) ? 5'd0 : ymreg[10][4] ? env_vol[4:0] : {ymreg[10][3:0], ymreg[10][3]}};
 end
 
-wire [7:0] volTable[64] = '{
-	//YM2149
-	8'h00, 8'h01, 8'h01, 8'h02, 8'h02, 8'h03, 8'h03, 8'h04, 
-	8'h06, 8'h07, 8'h09, 8'h0a, 8'h0c, 8'h0e, 8'h11, 8'h13, 
-	8'h17, 8'h1b, 8'h20, 8'h25, 8'h2c, 8'h35, 8'h3e, 8'h47, 
-	8'h54, 8'h66, 8'h77, 8'h88, 8'ha1, 8'hc0, 8'he0, 8'hff,
-
-	//AY8910
-	8'h00, 8'h00, 8'h03, 8'h03, 8'h04, 8'h04, 8'h06, 8'h06, 
-	8'h0a, 8'h0a, 8'h0f, 8'h0f, 8'h15, 8'h15, 8'h22, 8'h22, 
-	8'h28, 8'h28, 8'h41, 8'h41, 8'h5b, 8'h5b, 8'h72, 8'h72, 
-	8'h90, 8'h90, 8'hb5, 8'hb5, 8'hd7, 8'hd7, 8'hff, 8'hff 
+// Volume lookup table (packed for tool portability); index = A/B/C register
+wire [511:0] volTable = {
+	//AY8910 (index 63..32)
+	8'hff, 8'hff, 8'hd7, 8'hd7, 8'hb5, 8'hb5, 8'h90, 8'h90,
+	8'h72, 8'h72, 8'h5b, 8'h5b, 8'h41, 8'h41, 8'h28, 8'h28,
+	8'h22, 8'h22, 8'h15, 8'h15, 8'h0f, 8'h0f, 8'h0a, 8'h0a,
+	8'h06, 8'h06, 8'h04, 8'h04, 8'h03, 8'h03, 8'h00, 8'h00,
+	//YM2149 (index 31..0)
+	8'hff, 8'he0, 8'hc0, 8'ha1, 8'h88, 8'h77, 8'h66, 8'h54,
+	8'h47, 8'h3e, 8'h35, 8'h2c, 8'h25, 8'h20, 8'h1b, 8'h17,
+	8'h13, 8'h11, 8'h0e, 8'h0c, 8'h0a, 8'h09, 8'h07, 8'h06,
+	8'h04, 8'h03, 8'h03, 8'h02, 8'h02, 8'h01, 8'h01, 8'h00
 };
 
-assign CHANNEL_A = volTable[A];
-assign CHANNEL_B = volTable[B];
-assign CHANNEL_C = volTable[C];
+assign CHANNEL_A = volTable[A*8 +: 8];
+assign CHANNEL_B = volTable[B*8 +: 8];
+assign CHANNEL_C = volTable[C*8 +: 8];
 
 endmodule

@@ -164,7 +164,7 @@ always @(posedge clk_sys) begin
 	ce_spi    <= vsd_sel | ((status[33] | !counter[1]) & !counter[0]);
 end
 
-wire [4:0] turbo_req;
+reg [4:0] turbo_req;
 always_comb begin
 	casex({tape_active & ~status[6], status[24:22]})
 		 'b1XXX: turbo_req = 5'b00001;
@@ -243,13 +243,17 @@ wire        sd_wr_mmc;
 wire [31:0] sd_lba_mmc;
 wire [7:0]  sd_buff_din_mmc;
 
-wire [31:0] sd_lba[2] = '{plus3_fdd_ready ? sd_lba_plus3 : sd_lba_wd, sd_lba_mmc};
+wire [31:0] sd_lba[2];
+assign sd_lba[0] = plus3_fdd_ready ? sd_lba_plus3 : sd_lba_wd;
+assign sd_lba[1] = sd_lba_mmc;
 wire  [1:0] sd_rd = {sd_rd_mmc, plus3_fdd_ready ? sd_rd_plus3 : sd_rd_wd};
 wire  [1:0] sd_wr = {sd_wr_mmc, plus3_fdd_ready ? sd_wr_plus3 : sd_wr_wd};
 wire  [1:0] sd_ack;
 wire  [8:0] sd_buff_addr;
 wire  [7:0] sd_buff_dout;
-wire  [7:0] sd_buff_din[2] = '{plus3_fdd_ready ? sd_buff_din_plus3 : sd_buff_din_wd, sd_buff_din_mmc};
+wire  [7:0] sd_buff_din[2];
+assign sd_buff_din[0] = plus3_fdd_ready ? sd_buff_din_plus3 : sd_buff_din_wd;
+assign sd_buff_din[1] = sd_buff_din_mmc;
 wire        sd_buff_wr;
 wire  [1:0] img_mounted;
 wire [63:0] img_size;
@@ -263,6 +267,7 @@ wire  [7:0] ioctl_index;
 wire        ioctl_wait;
 
 wire [21:0] gamma_bus;
+reg new_vmode = 0;   // declared before hps_io (first reference) for tool portability
 
 hps_io #(.CONF_STR(CONF_STR), .VDNUM(2)) hps_io
 (
@@ -852,7 +857,6 @@ video_mixer #(.LINE_LENGTH(896), .GAMMA(1)) video_mixer
 
 assign VGA_SL = {scale==3, scale==2};
 
-reg new_vmode = 0;
 always @(posedge clk_sys) begin
 	reg [1:0] vmode;
 	

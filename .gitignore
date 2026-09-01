@@ -43,3 +43,6 @@ sim/work.vvp
 sim/compile_err.log
 lfo_sh*_lut.hex
 /.superpowers/
+
+sim/roms/*.rom
+sim/roms/*.hex

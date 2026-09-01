@@ -46,3 +46,4 @@ lfo_sh*_lut.hex
 
 sim/roms/*.rom
 sim/roms/*.hex
+sim/out/regression_new.txt

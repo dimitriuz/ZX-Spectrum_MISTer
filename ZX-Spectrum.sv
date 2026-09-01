@@ -92,7 +92,7 @@ localparam CONF_STR = {
 	"D3P2OP,Snow Bug,Disabled,Enabled;",
 	"P2-;",
 	"P2O[9:8],Video Timings,ULA-48,ULA-128,Pentagon;",
-	"P2O[12:10],Memory,Spectrum 128K/+2,Pentagon 1024K,Profi 1024K,Spectrum 48K,Spectrum +2A/+3;",
+	"P2O[12:10],Memory,Spectrum 128K/+2,Pentagon 1024K,Profi 1024K,Spectrum 48K,Spectrum +2A/+3,Scorpion ZS-256;",
 	"P2-;",
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
@@ -372,6 +372,8 @@ T80pa cpu
 wire [7:0] cpu_din =  
 		~nMREQ   ? (tape_dout_en ? tape_dout : ram_dout)      :
 		~io_rd   ? port_ff                                    :
+		(scorp & (addr[14:0] == 15'h1FFD)) ? scorp_1ffd               :
+		(scorp & (addr[14:0] == 15'h7FFD)) ? {4'b0, scorp_page}       :
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
 		mmc_sel  ? mmc_dout                                   :
@@ -421,10 +423,11 @@ always_comb begin
 		'b01XX_X_XX: ram_addr = load_addr;
 		'b001X_X_XX: ram_addr = tape_addr;
 		'b0001_X_XX: ram_addr = { 4'b1000, mmc_ram_bank,                                     addr[12:0]};
-		'b0000_0_00: ram_addr = { 3'b101,  page_rom,                                         addr[13:0]}; //ROM
-		'b0000_0_01: ram_addr = { 4'b0000, 3'd5,                                             addr[13:0]}; //Non-special page modes
-		'b0000_0_10: ram_addr = { 4'b0000, 3'd2,                                             addr[13:0]};
-		'b0000_0_11: ram_addr = { 1'b0,    page_ram,                                         addr[13:0]};
+		'b0000_0_00: ram_addr = scorp ? (scorp_1ffd[0] ? { 1'b0, 4'd0, addr[13:0] } : { 3'b110, page_rom, addr[13:0] })
+		                              : { 3'b101, page_rom, addr[13:0] }; //ROM (scorp: RAM bank 0 / Scorpion ROM window)
+		'b0000_0_01: ram_addr = scorp ? { 1'b0, 4'd5, addr[13:0] } : { 4'b0000, 3'd5, addr[13:0] }; // #4000: bank 5 fixed (screen)
+		'b0000_0_10: ram_addr = scorp ? { 1'b0, 4'd2, addr[13:0] } : { 4'b0000, 3'd2, addr[13:0] }; // #8000: bank 2 fixed
+		'b0000_0_11: ram_addr = { 1'b0, (scorp ? {1'b0, scorp_page} : page_ram), addr[13:0]};          // #C000: paged bank
 		'b0000_1_00: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b00, addr[13:0]}; //Special page modes
 		'b0000_1_01: ram_addr = { 4'b0000, |page_reg_plus3[2:1], &page_reg_plus3[2:1], 1'b1, addr[13:0]};
 		'b0000_1_10: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b10, addr[13:0]};
@@ -448,7 +451,7 @@ always_comb begin
 		'b1XX: ram_we = snap_wr;
 		'b01X: ram_we = ioctl_wr;
 		'b001: ram_we = 0;
-		'b000: ram_we = (mmc_ram_en | page_special | addr[15] | addr[14] | ((plusd_mem | mf128_mem) & addr[13])) & ~nMREQ & ~nWR;
+		'b000: ram_we = (mmc_ram_en | page_special | addr[15] | addr[14] | (~scorp & (plusd_mem | mf128_mem) & addr[13]) | (scorp & scorp_1ffd[0] & ~addr[14] & ~addr[15])) & ~nMREQ & ~nWR;
 	endcase
 end
 
@@ -482,12 +485,14 @@ reg        zx48;
 reg        p1024;
 reg        pf1024;
 reg        plus3;
+reg        scorp;
 reg        page_scr_copy;
+reg  [7:0] scorp_1ffd;
 reg        shadow_rom;
 reg  [7:0] page_reg;
 reg  [7:0] page_reg_plus3;
 reg  [7:0] page_reg_p1024;
-wire       page_disable = zx48 | (~p1024 & page_reg[5]) | (p1024 & page_reg_p1024[2] & page_reg[5]);
+wire       page_disable = zx48 | (~p1024 & ~scorp & page_reg[5]) | (p1024 & page_reg_p1024[2] & page_reg[5]);
 wire       page_scr     = page_reg[3];
 wire [5:0] page_ram     = {page_128k, page_reg[2:0]};
 wire       page_write   = ~addr[15] & ~addr[1] & (addr[14] | ~plus3) & ~page_disable; //7ffd
@@ -495,21 +500,30 @@ wire       page_write_plus3 = ~addr[1] & addr[12] & ~addr[13] & ~addr[14] & ~add
 wire       page_special = page_reg_plus3[0];
 wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
+wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
+wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
 reg  [2:0] page_128k;
 
 reg  [3:0] page_rom;
 wire       active_48_rom = zx48 | (page_reg[4] & ~plus3) | (plus3 & page_reg[4] & page_reg_plus3[2] & ~page_special);
 
 always_comb begin
-	casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
-		'b1XXXXX: page_rom <=   4'b0011; //esxdos
-		'b01XXXX: page_rom <=   4'b0100; //shadow
-		'b001XXX: page_rom <=   4'b0101; //trdos
-		'b0001XX: page_rom <=   4'b1100; //plusd
-		'b00001X: page_rom <= { 2'b11, plus3, ~plus3 }; //MF128/+3
-		'b000001: page_rom <= { 2'b10, page_reg_plus3[2], page_reg[4] }; //+3
-		'b000000: page_rom <= { zx48, 2'b11, zx48 | page_reg[4] }; //up to +2
-	endcase
+	if(scorp) begin
+		if(scorp_1ffd[0])      page_rom <= 4'd0;   // #0000 shows RAM bank 0 instead (decode override)
+		else if(scorp_1ffd[1]) page_rom <= 4'd2;   // ROM2 Shadow Service Monitor
+		else                   page_rom <= page_reg[4] ? 4'd1 : 4'd0; // ROM1 48K BASIC / ROM0 Scorpion BASIC 128
+	end else begin
+		casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
+			'b1XXXXX: page_rom <=   4'b0011; //esxdos
+			'b01XXXX: page_rom <=   4'b0100; //shadow
+			'b001XXX: page_rom <=   4'b0101; //trdos
+			'b0001XX: page_rom <=   4'b1100; //plusd
+			'b00001X: page_rom <= { 2'b11, plus3, ~plus3 }; //MF128/+3
+			'b000001: page_rom <= { 2'b10, page_reg_plus3[2], page_reg[4] }; //+3
+			'b000000: page_rom <= { zx48, 2'b11, zx48 | page_reg[4] }; //up to +2
+		endcase
+	end
+	if(scorp & trdos_en) page_rom <= 4'd3;   // ROM3 TR-DOS when disk active
 end
 
 always @(posedge clk_sys) begin
@@ -528,10 +542,12 @@ always @(posedge clk_sys) begin
 		page_reg_plus3 <= 0; 
 		page_reg_p1024 <= 0;
 		page_128k   <= 0;
+		scorp_1ffd  <= 0;
+		scorp       <= (status[12:10] == 5);
 		page_reg[4] <= Fn[10];
 		page_reg_plus3[2] <= Fn[10];
 		shadow_rom <= shdw_reset & ~plusd_en;
-		if(Fn[10] && (rmod == 1)) begin
+		if(Fn[10] && (rmod == 1) && (status[12:10] != 5)) begin
 			p1024  <= 0;
 			pf1024 <= 0;
 			zx48   <= ~plus3;
@@ -551,7 +567,9 @@ always @(posedge clk_sys) begin
 			if(m1 && ~old_m1 && ~plusd_en && ~mod[0] && (addr == 'h66) && ~plus3) shadow_rom <= 1; 
 
 			if(io_wr & ~old_wr) begin
-				if(page_write) begin
+				if(scorp_1ffd_wr) begin
+					scorp_1ffd <= cpu_dout;
+				end else if(page_write) begin
 					page_reg  <= cpu_dout;
 					if(p1024 & ~page_reg_p1024[2]) page_128k[2:0] <= { cpu_dout[5], cpu_dout[7:6] };
 					if(~plusd_mem) page_scr_copy <= cpu_dout[3];
@@ -1106,7 +1124,7 @@ always @(posedge clk_sys) begin
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
 			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & active_48_rom & ~&mmc_mode) trdos_en <= 1;
+				else if((addr[13:8] == 'h3D) & (active_48_rom | scorp) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
 	end

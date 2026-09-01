@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Compile + run the Icarus Verilog simulation in Docker (image xzs-sim:1.0, see sim/Dockerfile).
-# Usage: ./sim/run_sim.sh [testname] [stop-ns]
+# Usage: ./sim/run_sim.sh [testname] [stop-ns] [regfile]
 #   testname  TB test to run (default: smoke); passed as +TEST=<name>
 #   stop-ns   watchdog in sim-time ns (default: 20000000 = 20 ms); passed as +STOPNS=<n>
+#   regfile   output file for the regression test (default: sim/out/regression_new.txt)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TEST="${1:-smoke}"
 STOPNS="${2:-20000000}"
+REGFILE="${3:-sim/out/regression_new.txt}"
 
 # jt12's $readmemh uses bare filenames resolved against CWD - stage them at repo root
 cp rtl/jt12/lfo_sh1_lut.hex rtl/jt12/lfo_sh2_lut.hex .
@@ -15,6 +17,7 @@ trap 'rm -f lfo_sh1_lut.hex lfo_sh2_lut.hex' EXIT
 
 docker run --rm -v "$PWD":/work -w /work xzs-sim:1.0 bash -c "
   set -e
+  mkdir -p sim/out
   iverilog -g2012 -o sim/work.vvp \
       -I sim \
       sim/build_id.v \
@@ -36,5 +39,5 @@ docker run --rm -v "$PWD":/work -w /work xzs-sim:1.0 bash -c "
       rtl/jt12/jt12_pg_comb.v rtl/jt12/jt12_pg_dt.v rtl/jt12/jt12_pg_inc.v rtl/jt12/jt12_pg_sum.v \
       sys/scandoubler.v sys/video_freezer.sv sys/gamma_corr.sv sys/hq2x.sv \
       2> sim/compile_err.log || { echo 'COMPILE FAILED:'; cat sim/compile_err.log; exit 1; }
-  vvp sim/work.vvp +TEST=${TEST} +STOPNS=${STOPNS}
+  vvp sim/work.vvp +TEST=${TEST} +STOPNS=${STOPNS} +REGFILE=${REGFILE}
 "

@@ -46,6 +46,7 @@ localparam ARCH_ZX3   = 5'b100_01; // ZX 128 +3
 localparam ARCH_P48   = 5'b011_10; // Pentagon 48
 localparam ARCH_P128  = 5'b000_10; // Pentagon 128
 localparam ARCH_P1024 = 5'b001_10; // Pentagon 1024
+localparam ARCH_SCORP = 5'b101_00; // Scorpion ZS-256
 
 localparam CONF_BDI   = "(BDI)";
 localparam CONF_PLUSD = "(+D) ";
@@ -564,8 +565,9 @@ always @(posedge clk_sys) begin
 		end
 	end else begin
 		if(snap_REGSet) begin
-			if((snap_hw == ARCH_ZX128) || (snap_hw == ARCH_P128) || (snap_hw == ARCH_ZX3)) page_reg <= snap_7ffd;
+			if((snap_hw == ARCH_ZX128) || (snap_hw == ARCH_P128) || (snap_hw == ARCH_ZX3) || (snap_hw == ARCH_SCORP)) page_reg <= snap_7ffd;
 			if(snap_hw == ARCH_ZX3) page_reg_plus3 <= snap_1ffd;
+			if(snap_hw == ARCH_SCORP) scorp_1ffd <= snap_1ffd;
 		end
 		else begin
 			if(m1 && ~old_m1 && addr[15:14]) shadow_rom <= 0;
@@ -1323,7 +1325,7 @@ wire   [2:0] snap_border;
 wire   [7:0] snap_1ffd;
 wire   [7:0] snap_7ffd;
 
-snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128) snap_loader
+snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128, ARCH_SCORP) snap_loader
 (
 	.clk_sys(clk_sys),
 

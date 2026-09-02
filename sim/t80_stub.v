@@ -37,6 +37,11 @@ module T80pa (
             tick <= 0;
             halted <= 0;
             nmi_latch <= 0;
+        end else if (DIRSet) begin
+            // Snapshot restore: model T80's DIR/DIRSet by loading the register file
+            // and resuming the fetch loop at the snapshot PC (DIR[79:64]).
+            REG <= DIR;
+            pc  <= DIR[79:64];
         end else if (CEN_p) begin
             // NMI: latch while asserted. The core clears NMI on the vector M1 at
             // #0066, so a held key cannot re-arm before the vector is consumed.

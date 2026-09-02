@@ -45,5 +45,6 @@ lfo_sh*_lut.hex
 /.superpowers/
 
 sim/roms/*.rom
+sim/roms/*.z80
 sim/roms/*.hex
 sim/out/regression_new.txt

@@ -53,6 +53,10 @@ Use early exit in long tests; the boot test exits at its first criteria poll
 1. Full battery green: smoke, regression, alias, paging, romchain, mni, snapscorp
 2. `diff sim/out/regression_base.txt sim/out/regression_new.txt` → byte-clean
 3. Scorpion behavior changes: REALCPU boot test as well
+4. **Coverage caveat:** the regression trace captures CPU/memory state only —
+   NOT audio or video output. Any conversion of sound-module tables (saa1099,
+   ym2149) or palette/LUT code MUST be verified value-by-value against the
+   original with a script (all indices × all inputs), not just by the battery.
 
 ## Invariants (do not break)
 

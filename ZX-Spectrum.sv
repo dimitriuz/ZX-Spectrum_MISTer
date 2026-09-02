@@ -400,7 +400,7 @@ always @(posedge clk_sys) begin
 	if(reset | ~Fn[11] | (m1 & (addr == 'h66))) NMI <= 0;
 	else if(~old_F11 & Fn[11] & (mod[2:1] == 0)) begin
 		NMI <= 1;
-		if(scorp) scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}; // MNI: Shadow Monitor (ROM2)
+		if(scorp) mni_pending <= 1; // MNI: Shadow Monitor (ROM2); applied in the paging block
 	end
 end
 
@@ -490,6 +490,7 @@ reg        plus3;
 reg        scorp;
 reg        page_scr_copy;
 reg  [7:0] scorp_1ffd;
+reg        mni_pending = 0; // F11 MNI latch, applied in the paging block (single-driver style)
 reg        shadow_rom;
 reg  [7:0] page_reg;
 reg  [7:0] page_reg_plus3;
@@ -546,6 +547,7 @@ always @(posedge clk_sys) begin
 		page_reg_p1024 <= 0;
 		page_128k   <= 0;
 		scorp_1ffd  <= 0;
+		mni_pending <= 0;
 		scorp       <= (status[12:10] == 5);
 		page_reg[4] <= Fn[10];
 		page_reg_plus3[2] <= Fn[10];
@@ -582,6 +584,10 @@ always @(posedge clk_sys) begin
 				if(pf1024 & (addr == 'hDFFD)) page_128k <= cpu_dout[2:0];
 				if(p1024 & page_p1024) page_reg_p1024 <= cpu_dout;
 			end
+		end
+		if(mni_pending) begin
+			scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}; // MNI latch (ROM2); not gated by scorp_lock
+			mni_pending <= 0;
 		end
 	end
 end

@@ -288,14 +288,15 @@ function       phases_lut;
 	end
 endfunction
 
-function [1:0] env_lut;
+function [3:0] env_lut;
 	input [2:0] i;
 	begin
 		case(i)
-			3'd0:          env_lut = 2'b00;
-			3'd1:          env_lut = 2'b01;
-			3'd2, 3'd3:    env_lut = 2'b10;
-			default:       env_lut = 2'b11;   // shapes 4..7
+			3'd0:       env_lut = 4'b00_00;   // {row_phase1, row_phase0}
+			3'd1:       env_lut = 4'b01_01;
+			3'd2, 3'd3: env_lut = 4'b00_10;
+			3'd4, 3'd5: env_lut = 4'b10_11;
+			default:    env_lut = 4'b00_11;   // shapes 6..7
 		endcase
 	end
 endfunction
@@ -356,8 +357,8 @@ always @(posedge clk_sys) begin
 	end
 end
 
-wire [1:0] env_idx = env_lut(shape);
-wire [3:0] env_l = level_lut(env_idx[phase], counter) & ~mask;
+wire [3:0] env_idx = env_lut(shape);
+wire [3:0] env_l = level_lut(phase ? env_idx[3:2] : env_idx[1:0], counter) & ~mask;
 wire [3:0] env_r = stereo ? (4'd15 & ~mask) - env_l : env_l; // bit 0 of envreg inverts envelope shape
 
 reg  [1:0] outmix;

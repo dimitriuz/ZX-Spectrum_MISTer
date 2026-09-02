@@ -29,13 +29,19 @@ module T80pa (
     reg [15:0] pc = 0;
     reg [2:0] tick = 0;      // 4-tick instruction
     reg       halted = 0;
+    reg       nmi_latch = 0; // NMI pending: vector to #0066 at the next M1
 
     always @(posedge CLK) begin
         if (!RESET_n) begin
             pc <= 16'h0000;
             tick <= 0;
             halted <= 0;
+            nmi_latch <= 0;
         end else if (CEN_p) begin
+            // NMI: latch while asserted. The core clears NMI on the vector M1 at
+            // #0066, so a held key cannot re-arm before the vector is consumed.
+            // (Set and clear below are mutually exclusive on tick==3.)
+            if (!halted && !NMI_n && tick != 3) nmi_latch <= 1;
             if (!BUSRQ_n) begin
                 // finish current tick group, then take the bus
                 if (tick == 3) halted <= 1;
@@ -44,7 +50,10 @@ module T80pa (
                 if (BUSRQ_n) halted <= 0;   // release on deassert
             end else begin
                 tick <= tick + 1;
-                if (tick == 3) pc <= pc + 1;
+                if (tick == 3) begin
+                    pc <= nmi_latch ? 16'h0066 : pc + 1;
+                    nmi_latch <= 0;         // consume the vector
+                end
             end
         end
     end

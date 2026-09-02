@@ -398,7 +398,10 @@ always @(posedge clk_sys) begin
 	old_F11 <= Fn[11];
 
 	if(reset | ~Fn[11] | (m1 & (addr == 'h66))) NMI <= 0;
-	else if(~old_F11 & Fn[11] & (mod[2:1] == 0)) NMI <= 1;
+	else if(~old_F11 & Fn[11] & (mod[2:1] == 0)) begin
+		NMI <= 1;
+		if(scorp) scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}; // MNI: Shadow Monitor (ROM2)
+	end
 end
 
 

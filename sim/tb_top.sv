@@ -623,6 +623,50 @@ module tb_top;
         end
     endtask
 
+    // MNI: F11 (no modifiers) pulses NMI; on Scorpion the core must also select the
+    // Shadow Service Monitor (scorp_1ffd bit 1 set, bit 0 kept -> ROM2 window). The
+    // stub's NMI vector M1 at #0066 must land in the ROM2 column; OUT (#1FFD),0 via
+    // the real hardware path exits back to ROM0.
+    task test_mni;
+        integer i;
+        begin
+            machine_reset(M_SCORP);
+            wait_sdr_up;                            // controller still in startup at t=0
+            repeat (400) @(posedge tb_clksys);      // a few hundred cycles of normal fetches
+
+            // Precondition: ROM0 active — an M1 fetch below #4000 decodes column 32.
+            i = 0;
+            while (!(dut.m1 && dut.addr < 16'h4000) && i < 4096) begin @(posedge tb_clksys); i = i + 1; end
+            if (i >= 4096) begin $display("MNI FAIL no M1 fetch below #4000"); $finish; end
+            if (dut.ram_addr[19:14] !== 6'd32) begin $display("MNI FAIL pre column got=%d want=32", dut.ram_addr[19:14]); $finish; end
+
+            // F11 press -> Fn[11] rising edge -> NMI (MNI).
+            press_key(8'h78);
+            i = 0;
+            while (dut.NMI !== 1'b1 && i < 200) begin @(posedge tb_clksys); i = i + 1; end
+            if (dut.NMI !== 1'b1) begin $display("MNI FAIL no NMI pulse within 200 cycles"); $finish; end
+
+            // MNI must select the Shadow Service Monitor: bit 1 set, bit 0 kept.
+            if (dut.scorp_1ffd !== 8'h02) begin $display("MNI FAIL scorp_1ffd got=%h want=02", dut.scorp_1ffd); $finish; end
+
+            // The stub's NMI vector: the M1 fetch at #0066 must land in the ROM2 window (column 34).
+            i = 0;
+            while (!(dut.m1 && dut.addr == 16'h0066) && i < 8192) begin @(posedge tb_clksys); i = i + 1; end
+            if (i >= 8192) begin $display("MNI FAIL no vector M1 at #0066"); $finish; end
+            if (dut.ram_addr[19:14] !== 6'd34) begin $display("MNI FAIL vector column got=%d want=34", dut.ram_addr[19:14]); $finish; end
+
+            // Monitor exit via the real hardware path: OUT (#1FFD),0 -> ROM0 (column 32).
+            release_key(8'h78);                     // drop F11 so NMI cannot re-fire
+            io_write(16'h1FFD, 8'h00);
+            i = 0;
+            while (!(dut.m1 && dut.addr < 16'h4000) && i < 8192) begin @(posedge tb_clksys); i = i + 1; end
+            if (i >= 8192) begin $display("MNI FAIL no M1 fetch below #4000 after exit"); $finish; end
+            if (dut.ram_addr[19:14] !== 6'd32) begin $display("MNI FAIL post column got=%d want=32", dut.ram_addr[19:14]); $finish; end
+
+            $display("MNI PASS");
+        end
+    endtask
+
     // ------------------------------------------------------------------
     // Main
     // ------------------------------------------------------------------
@@ -638,6 +682,7 @@ module tb_top;
             "alias":       test_alias();
             "paging":      test_paging();
             "romchain":    test_romchain();
+            "mni":         test_mni();
             default:       $display("unknown test %0s", testname);
         endcase
         $display("DONE");

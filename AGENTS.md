@@ -9,6 +9,11 @@ SystemVerilog/Quartus FPGA core of the ZX Spectrum family for MiSTer. Branch
 verified sim-first with the iverilog harness in `sim/`; Quartus builds happen
 only after sim is green.
 
+## Workflow rules
+
+- **Do all calculations by scripts** (python3, awk, xxd — anything that runs): hex decoding, bit-field math, address/SDRAM mapping, ROM scans/disassembly, checksums. Never compute these in your head; write a script, run it, trust its output.
+- **Do not use subagents.** Work directly in the current session: read, edit, run sim, iterate. This repo's work is a tight sim-debug loop — delegation adds overhead without useful parallelism.
+
 ## Repo layout
 
 | Path | Contents |

@@ -38,6 +38,7 @@ Note: page 1 is **not** byte-identical to either existing 48K BASIC chunk in boo
 - **Sim-first verification.** No MiSTer hardware available yet: build an iverilog testbench harness first, flash-test on real hardware later.
 - **ROM v2.94** ("recomended" in the source repo).
 - Base ZS-256 only (no GMX graphics expander, no Turbo+ ISA/IDE).
+- **Border power-on value.** `border_color` is initialized to 0 (FPGA flip-flops power up at 0). v2.94 never writes port #FF during boot (ROM scan: no `OUT (#FF),A` in pages 0-2), so without the init the Scorpion border would be X in sim, unlike real hardware where the ULA latch powers up defined.
 
 ## 3. SDRAM aliasing (derived, to be confirmed by sim)
 

@@ -596,7 +596,7 @@ end
 
 
 ////////////////////  ULA PORT  ///////////////////
-reg [2:0] border_color;
+reg [2:0] border_color = 3'b000;   // FPGA flip-flops power up at 0; Scorpion v2.94 never writes #FF during boot, so the sim must match the hardware default
 reg       ear_out;
 reg       mic_out;
 

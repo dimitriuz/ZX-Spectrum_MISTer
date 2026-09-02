@@ -48,3 +48,4 @@ sim/roms/*.rom
 sim/roms/*.z80
 sim/roms/*.hex
 sim/out/regression_new.txt
+sim/out/screen_boot.hex

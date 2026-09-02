@@ -11,10 +11,15 @@ TEST="${1:-smoke}"
 STOPNS="${2:-300000000}"
 REGFILE="${3:-sim/out/regression_new.txt}"
 
+# REALCPU=1 swaps the fetch-only CPU stub for a real Z80 (TV80) - boot test only.
+CPU_FILES="sim/t80_stub.v"
+if [ "${REALCPU:-0}" = "1" ]; then
+    CPU_FILES="sim/cpu/t80_real.v sim/cpu/tv80/tv80s.v sim/cpu/tv80/tv80_core.v sim/cpu/tv80/tv80_alu.v sim/cpu/tv80/tv80_mcode.v sim/cpu/tv80/tv80_reg.v"
+fi
+
 # jt12's $readmemh uses bare filenames resolved against CWD - stage them at repo root
 cp rtl/jt12/lfo_sh1_lut.hex rtl/jt12/lfo_sh2_lut.hex .
 trap 'rm -f lfo_sh1_lut.hex lfo_sh2_lut.hex' EXIT
-
 docker run --rm -v "$PWD":/work -w /work xzs-sim:1.0 bash -c "
   set -e
   mkdir -p sim/out
@@ -22,7 +27,7 @@ docker run --rm -v "$PWD":/work -w /work xzs-sim:1.0 bash -c "
       -I sim \
       sim/build_id.v \
       sim/prims/altddio_out.v sim/prims/pll_model.v sim/prims/altsyncram_model.v sim/prims/sys_math_models.v \
-      sim/sdram_model.v sim/host_model.v sim/t80_stub.v sim/tzxplayer_stub.v \
+      sim/sdram_model.v sim/host_model.v ${CPU_FILES} sim/tzxplayer_stub.v \
       sim/tb_top.sv \
       ZX-Spectrum.sv rtl/gs.v rtl/divmmc.v rtl/dpram.v \
       sys/sd_card.sv sys/video_freak.sv sys/video_mixer.sv sys/ltc2308.sv \

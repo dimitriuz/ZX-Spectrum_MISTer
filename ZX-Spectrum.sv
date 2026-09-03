@@ -393,16 +393,13 @@ always @(posedge clk_sys) begin
 end
 
 reg NMI;
+reg old_F11;
+wire mni_pulse = ~old_F11 & Fn[11] & (mod[2:1] == 0); // F11 rising edge, mod 0/1 -> MNI
 always @(posedge clk_sys) begin
-	reg old_F11;
-
 	old_F11 <= Fn[11];
 
 	if(reset | ~Fn[11] | (m1 & (addr == 'h66))) NMI <= 0;
-	else if(~old_F11 & Fn[11] & (mod[2:1] == 0)) begin
-		NMI <= 1;
-		if(scorp) mni_pending <= 1; // MNI: Shadow Monitor (ROM2); applied in the paging block
-	end
+	else if(mni_pulse) NMI <= 1;
 end
 
 
@@ -591,6 +588,7 @@ always @(posedge clk_sys) begin
 			scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}; // MNI latch (ROM2); not gated by scorp_lock
 			mni_pending <= 0;
 		end
+		if(mni_pulse & scorp) mni_pending <= 1; // single driver: reset above clears, this sets
 	end
 end
 

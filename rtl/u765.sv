@@ -365,6 +365,7 @@ always @(posedge clk_sys) begin
 		i_rpm_time[0][0] <= CYCLES; i_rpm_time[0][1] <= CYCLES;
 		i_rpm_time[1][0] <= CYCLES; i_rpm_time[1][1] <= CYCLES;
 		image_track_offsets_wr <= 0;
+		image_scan_state[0] <= 0; image_scan_state[1] <= 0;
 		//restart "mounting" of image(s)
 		if (image_scan_state[0]) image_scan_state[0] <= 1;
 		if (image_scan_state[1]) image_scan_state[1] <= 1;

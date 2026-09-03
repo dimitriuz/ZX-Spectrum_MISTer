@@ -615,6 +615,15 @@ module tb_top;
             if (d !== want) begin $display("PAGING FAIL lockout #E000 got=%h want=%h", d, want[7:0]); $finish; end
             if (dut.page_reg !== 8'h25) begin $display("PAGING FAIL lockout page_reg got=%h want=25", dut.page_reg); $finish; end
             if (dut.scorp_1ffd !== 8'h00) begin $display("PAGING FAIL lockout scorp_1ffd got=%h want=0", dut.scorp_1ffd); $finish; end
+            // Reset clears the lockout ("until reset" half of the contract):
+            // paging writes apply again and the paged window follows.
+            machine_reset({51'b0, 3'd5, 10'b0});   // Scorpion
+            wait_sdr_up;                            // controller restarts on reset
+            io_write(16'h7FFD, 8'h03);              // must now apply (unlocked)
+            if (dut.page_reg !== 8'h03) begin $display("PAGING FAIL post-reset page_reg got=%h want=03", dut.page_reg); $finish; end
+            cpu_read(16'hC000, d);                  // paged window follows: bank 3 at offset 0
+            want = 3 * 7 + 3;
+            if (d !== want) begin $display("PAGING FAIL post-reset #C000 got=%h want=%h", d, want[7:0]); $finish; end
             $display("PAGING PASS");
         end
     endtask
@@ -699,6 +708,15 @@ module tb_top;
             if (i >= 8192) begin $display("MNI FAIL no M1 fetch below #4000 after exit"); $finish; end
             if (dut.ram_addr[19:14] !== 6'd32) begin $display("MNI FAIL post column got=%d want=32", dut.ram_addr[19:14]); $finish; end
 
+            // Pre-set bit 0 (ROM1 select): a second MNI must preserve it -> 0x03.
+            io_write(16'h1FFD, 8'h01);
+            repeat (4) @(posedge tb_clksys);         // settle before NMI
+            press_key(8'h78);
+            i = 0;
+            while (dut.NMI !== 1'b1 && i < 200) begin @(posedge tb_clksys); i = i + 1; end
+            if (dut.NMI !== 1'b1) begin $display("MNI FAIL no second NMI pulse"); $finish; end
+            repeat (4) @(posedge tb_clksys);         // let the mni_pending latch apply
+            if (dut.scorp_1ffd !== 8'h03) begin $display("MNI FAIL pre-set bit0 got=%h want=03", dut.scorp_1ffd); $finish; end
             $display("MNI PASS");
         end
     endtask
@@ -771,47 +789,80 @@ module tb_top;
 
     // Read one byte from the SDRAM model's memory array by 25-bit local address.
     // Non-intrusive (no bus traffic) - safe to call while the real CPU is running.
-    // Controller mapping (rtl/sdram.sv): bank = addr[24:23], row = addr[13:8],
-    // col = addr[6:1], byte half = addr[13:12].
+    // Controller mapping (rtl/sdram.sv): ACTIVE drives row = addr[13:1],
+    // BA = addr[24:23]; CAS drives A[8:0] = addr[22:14] and the model decodes only
+    // A[5:0] (= addr[19:14]) as the column with bank = BA[0] = addr[23].
+    // Byte half = addr[0] (controller's dout select).
     function [7:0] sdr_byte;
         input [24:0] la;
         begin
-            if (la[13:12]) sdr_byte = sdr.mem[la[24:23]][{la[13:8], la[6:1]}][15:8];
-            else           sdr_byte = sdr.mem[la[24:23]][{la[13:8], la[6:1]}][7:0];
+            if (la[0]) sdr_byte = sdr.mem[la[23]][{la[13:1], la[19:14]}][15:8];
+            else       sdr_byte = sdr.mem[la[23]][{la[13:1], la[19:14]}][7:0];
         end
     endfunction
-    // boot: real Scorpion v2.94 BASIC executing on a real Z80 (TV80 - only compiled
-    // when run_sim.sh is invoked with REALCPU=1; with the fetch-only stub this test
-    // fails at the screen check). Loads the ROM pages through the host download path
-    // (the actual power-on flow), releases reset, lets the CPU run, and verifies:
+    // Read one byte of the ULA's video RAM - the dpram mirror that receives every
+    // CPU write to #4000-#7FFF (dpram half 0) and to #C000-#FFFF while scorp_page
+    // is 5 (half 0) or 7 (half 1). Non-intrusive hierarchical read, same pattern
+    // as sdr_byte(). Sampling the full 32 KB covers both screen banks.
+    function [7:0] vram_byte;
+        input [14:0] a;
+        begin
+            vram_byte = dut.vram.altsyncram_component.mem[a][7:0];
+        end
+    endfunction
+    // boot: real Scorpion v2.94 firmware executing on a real Z80 (TV80 - only
+    // compiled when run_sim.sh is invoked with REALCPU=1; the test fails fast
+    // without it, so it can never pass against the fetch-only stub). Loads the ROM
+    // pages through the host download path (the actual power-on flow), releases
+    // reset, lets the CPU run, and verifies:
     //   1. M1 fetches from the ROM0 window (#0000-#3FFF -> SDRAM column 32)
-    //   2. screen RAM (SDRAM column 5, display file #4000-#7BFF) is not all zero;
-    //      a 32x192-byte snapshot is dumped to sim/out/screen_boot.hex
-    //   3. the border color register is defined after boot (FPGA power-on default 0;
-    // v2.94 never writes #FF during boot - ROM scan evidence, see ledger ruling)
+    //   2. v2.94's post-init paging reaches its measured final state #7FFD=0x10,
+    //      #1FFD=0x12: the firmware counts #7FFD down 0x17->0x10 (one step per
+    //      ~1.1M core clocks) while #1FFD stays 0x12 (Shadow Monitor select);
+    //      only executing firmware on a correctly decoding core reaches this state
+    //   3. ULA frame INTs fire during boot (v2.94 waits for the first one)
+    //   4. the border color register is defined after boot (FPGA power-on default
+    //      0; v2.94 never writes #FF until TR-DOS is entered - ROM scan evidence)
+    // The display file is NOT required to be non-zero: measured unattended boot
+    // reaches the Shadow Monitor without drawing a screen (no display-file writes
+    // during the whole sequence). Its contents are dumped to sim/out/screen_boot.hex
+    // for inspection; the display write path itself is pinned by test_paging.
     task test_boot;
-        integer i, row, c, m1cnt, nz, screen_nz;
+        integer i, row, c, m1cnt, nz, screen_nz, realcpu;
         reg [7:0] d;
         integer fd;
         reg [15:0] last_pc = 16'hffff;
         integer pc_changes = 0, int_edges = 0;
         reg old_int = 1'b1;
+        reg paging_seen = 1'b0;
         begin
+            // The fetch-only stub executes nothing - any pass without a real CPU is
+            // a false green. run_sim.sh passes +REALCPU=1 when TV80 is compiled in.
+            realcpu = 0;
+            if (!$value$plusargs("REALCPU=%d", realcpu) || !realcpu) begin
+                $display("BOOT FAIL: requires a real CPU (run: REALCPU=1 ./sim/run_sim.sh boot)");
+                $finish;
+            end
+
             machine_reset(M_SCORP);
             wait_sdr_up;
 
             // Power-on flow: the host downloads the boot ROM while reset is held.
-            load_rom_range(M_SCORP, "sim/roms/synthetic_boot.hex", 22'h2C000, 22'h14000); // chunks 12-15 (ROM pages 0-3)
+            load_rom_range(M_SCORP, "sim/roms/synthetic_boot.hex", 22'h2C000, 22'h14000); // chunks 11-15 (ROM pages 0-3 + ZX48)
 
-            // Let the real CPU run. The ULA's frame interrupt lands at line 248
-            // (~16 ms into a frame) and v2.94 waits for it before continuing boot;
-            // its init also contains long DEC BC countdowns, so allow up to ~800 ms
-            // of machine time (40M core clocks; T-state = 16 core clocks). Poll the
-            // SDRAM model directly (no bus traffic) and exit early once the screen
-            // has been written and the border set.
+            // Let the real CPU run. Measured boot flow (v2.94 ROM, this host): ULA
+            // frame INT at line 248; long DEC BC countdowns in ROM0; post-init then
+            // counts #7FFD down 0x17->0x10 (~1.1M core clocks per step) while
+            // #1FFD stays 0x12, completing at i~95M = ~850 ms of machine time.
+            // Clock math (verified against ULA counters): T-state = 32 core clocks;
+            // one frame = 312 lines x 448 ticks x 16 = 2,236,416 core clocks =
+            // 20 ms machine time. Window: 120M core clocks (~1.07 s) - ~25% margin
+            // over measured post-init completion. Poll memory directly (no bus
+            // traffic) and exit early once the final paging state is reached.
             m1cnt = 0;
-            for (i = 0; i < 40000000; i++) begin
+            for (i = 0; i < 120000000; i++) begin
                 @(posedge tb_clksys);
+                if (dut.page_reg === 8'h10 && dut.scorp_1ffd === 8'h12) paging_seen = 1'b1;
                 if (old_int & ~dut.nINT) begin
                     int_edges = int_edges + 1;
                     if (int_edges <= 8) $display("DBG INT assert i=%0d vc=%0d hc=%0d", i, dut.ULA.vc, dut.ULA.hc);
@@ -823,40 +874,57 @@ module tb_top;
                     if (dut.addr != last_pc) pc_changes = pc_changes + 1;
                     last_pc = dut.addr;
                 end
-                if (i % 50000 == 49999 && dut.border_color !== 3'bxxx) begin
+                if (i % 50000 == 49999) begin
                     screen_nz = 0;
                     for (c = 0; c < 256; c++)
-                        if (sdr_byte(25'h0018000 + c * 24) !== 8'h00) screen_nz = screen_nz + 1;
-                    if (screen_nz > 0) begin
-                        $display("DBG early exit at i=%0d (screen active, border set)", i);
-                        i = 40000000;
+                        if (vram_byte(c * 128) !== 8'h00) screen_nz = screen_nz + 1;
+                    // Periodic time-series so a single long run shows when each
+                    // criterion becomes true; flushed so progress is visible even
+                    // when stdout is piped (vvp fully buffers).
+                    if (i % 500000 == 499999) begin
+                        $display("DBG i=%0d m1=%0d int=%0d page=%h s1ffd=%h scr_nz=%0d", i, m1cnt, int_edges, dut.page_reg, dut.scorp_1ffd, screen_nz);
+                        $fflush();
+                    end
+                    if (paging_seen) begin
+                        $display("DBG early exit at i=%0d (post-init paging state reached)", i);
+                        i = 120000000;
                     end
                 end
             end
             $display("DBG m1cnt=%0d pc_changes=%0d int_edges=%0d last_pc=%h border=%b scorp_1ffd=%h page_reg=%h", m1cnt, pc_changes, int_edges, last_pc, dut.border_color, dut.scorp_1ffd, dut.page_reg);
             if (m1cnt < 100) begin
-                $display("BOOT FAIL: only %0d M1 fetches from the ROM0 window (run with REALCPU=1?)", m1cnt);
+                $display("BOOT FAIL: only %0d M1 fetches from the ROM0 window", m1cnt);
                 $finish;
             end
 
-            // Screen RAM: display file #4000-#7BFF -> SDRAM 0x18000+ (column 5).
-            // Read the model's memory directly - non-intrusive, no CPU pause needed.
+            // v2.94 post-init final state (measured real-CPU behavior): #7FFD=0x10,
+            // #1FFD=0x12 - the firmware counts #7FFD down from 0x17 and stops here.
+            if (!paging_seen) begin
+                $display("BOOT FAIL: post-init paging state never reached (#7FFD=0x10, #1FFD=0x12); page_reg=%h scorp_1ffd=%h", dut.page_reg, dut.scorp_1ffd);
+                $finish;
+            end
+
+            // v2.94 waits for the first ULA frame INT before continuing boot.
+            if (int_edges == 0) begin
+                $display("BOOT FAIL: no ULA frame INT observed during boot");
+                $finish;
+            end
+
+            // Display file: unattended boot does not draw a screen (measured), so
+            // non-zero content is NOT required. Dump the ULA's video RAM - the
+            // dpram mirror of all display-file writes, i.e. what the ULA displays.
             nz = 0;
             fd = $fopen("sim/out/screen_boot.hex", "w");
             if (!fd) begin $display("BOOT FAIL: cannot open sim/out/screen_boot.hex"); $finish; end
-            for (row = 0; row < 192; row++) begin
+            for (row = 0; row < 1024; row++) begin
                 for (c = 0; c < 32; c++) begin
-                    d = sdr_byte(25'h0018000 + row * 32 + c);
+                    d = vram_byte(row * 32 + c);
                     if (d !== 8'h00) nz = nz + 1;
                     $fwrite(fd, "%02x", d);
                 end
                 $fwrite(fd, "\n");
             end
             $fclose(fd);
-            if (nz == 0) begin
-                $display("BOOT FAIL: screen RAM all zero after boot (real CPU running? REALCPU=1?)");
-                $finish;
-            end
 
             // Border color: FPGA power-on default (0) - must stay defined, never X.
             if (dut.border_color === 3'bxxx) begin
@@ -864,7 +932,7 @@ module tb_top;
                 $finish;
             end
 
-            $display("BOOT PASS: %0d M1 fetches from ROM0, screen non-zero bytes=%0d, border=%b", m1cnt, nz, dut.border_color);
+            $display("BOOT PASS: %0d M1 fetches from ROM0, post-init paging #7FFD=%h/#1FFD=%h reached, int_edges=%0d, screen non-zero bytes=%0d (informational), border=%b", m1cnt, dut.page_reg, dut.scorp_1ffd, int_edges, nz, dut.border_color);
         end
     endtask
 

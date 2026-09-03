@@ -11,7 +11,9 @@ TEST="${1:-smoke}"
 STOPNS="${2:-300000000}"
 REGFILE="${3:-sim/out/regression_new.txt}"
 
-# REALCPU=1 swaps the fetch-only CPU stub for a real Z80 (TV80) - boot test only.
+# REALCPU=1 swaps the fetch-only CPU stub for a real Z80 (TV80) - boot test only;
+# also forwarded to the TB as +REALCPU so tests can require it (test_boot fails fast
+# without a real CPU instead of false-greening against the fetch-only stub).
 CPU_FILES="sim/t80_stub.v"
 if [ "${REALCPU:-0}" = "1" ]; then
     CPU_FILES="sim/cpu/t80_real.v sim/cpu/tv80/tv80s.v sim/cpu/tv80/tv80_core.v sim/cpu/tv80/tv80_alu.v sim/cpu/tv80/tv80_mcode.v sim/cpu/tv80/tv80_reg.v"
@@ -44,5 +46,5 @@ docker run --rm -v "$PWD":/work -w /work xzs-sim:1.0 bash -c "
       rtl/jt12/jt12_pg_comb.v rtl/jt12/jt12_pg_dt.v rtl/jt12/jt12_pg_inc.v rtl/jt12/jt12_pg_sum.v \
       sys/scandoubler.v sys/video_freezer.sv sys/gamma_corr.sv sys/hq2x.sv \
       2> sim/compile_err.log || { echo 'COMPILE FAILED:'; cat sim/compile_err.log; exit 1; }
-  vvp sim/work.vvp +TEST=${TEST} +STOPNS=${STOPNS} +REGFILE=${REGFILE}
+  vvp sim/work.vvp +TEST=${TEST} +STOPNS=${STOPNS} +REGFILE=${REGFILE} +REALCPU=${REALCPU:-0}
 "

@@ -43,10 +43,10 @@ Speeds — plan test windows accordingly:
 | CPU | Speed | Example |
 |---|---|---|
 | stub | ~7.5x slower than real time | full battery ≈ 25 min |
-| REALCPU (TV80) | ~1350x slower | 480 ms machine window ≈ 11 min wall |
+| REALCPU (TV80) | ~22,000x slower (~5k core clocks/s measured) | 1 frame = 2,236,416 core clocks ≈ 7.5 min wall |
 
-Use early exit in long tests; the boot test exits at its first criteria poll
-(~6 min wall).
+Use early exit in long tests; the boot test exits when v2.94's post-init paging
+state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on this host).
 
 **Gates before committing any RTL change:**
 
@@ -71,7 +71,8 @@ Use early exit in long tests; the boot test exits at its first criteria poll
   sampling contends with the CPU's bursty traffic and slows REALCPU sim
   20–30x (watchdog hangs). To inspect memory, use `sdr_byte()` in
   `sim/tb_top.sv` — a hierarchical read of the SDRAM model array
-  (`sdr.mem[bank][row]`), zero bus traffic, sampled at most once per core clock.
+  (`sdr.mem[la[23]][{la[13:1], la[19:14]}]`, byte select `la[0]`), zero bus
+  traffic, sampled at most once per core clock.
 - Scorpion paging decode must match Fuse `scorp_fuse.c` / speccy-bootcamp:
   - CPU #4000–#7FFF **fixed to physical bank 5**; #8000–#BFFF fixed to bank 2
     (unlike the ZX128 — verified against speccy-bootcamp).
@@ -88,14 +89,22 @@ Use early exit in long tests; the boot test exits at its first criteria poll
 
 ## Measured Scorpion v2.94 boot behavior (real CPU, for test design)
 
-BC=0xFFFF countdown (~800 ms machine time) → post-init code sets paging
-(`#7FFD=16`, `#1FFD=12` = upper page + Shadow ROM select) → CPU lives in the
-Shadow Monitor area. ULA INT spacing is exactly one frame (140k T-states).
-Border stays 0 for the whole boot (no #FF write until TR-DOS is entered).
+Boot flow (i = core clocks; T-state = 32 core clocks): ROM0 init + long DEC BC
+countdowns → post-init at i≈29M (~260 ms machine time) sets `#1FFD=0x12`
+(Shadow Monitor select) and counts `#7FFD` down 0x17→0x16→…→0x10, one step per
+~1.1M core clocks (~98 ms), stopping at the **final state #7FFD=0x10,
+#1FFD=0x12** at i≈95M (~850 ms machine time). The CPU then runs from paged RAM /
+ROM2 (no more M1 fetches from the ROM0 window). ULA INT spacing is exactly one
+frame (69,888 T-states = 2,236,416 core clocks = 20 ms). Border stays 0 for the
+whole boot (no #FF write until TR-DOS is entered). **Unattended boot does not
+draw a visible screen** — the only display-file writes are three scratch bytes
+(vram offsets 0x1C1B-0x1C1D, beyond the visible 24-band region); the Shadow
+Monitor draws its UI only on user interaction. The boot test therefore treats
+screen content as informational and pins the display write path in test_paging.
 
 ## Branch state
 
-`scorpion-zs256` (`b95fc83..b7cdafa`): complete Scorpion ZS-256 support —
+`scorpion-zs256` (forked from master `7510bb2`, pushed to `dimitriuz/ZX-Spectrum_MISTer`): complete Scorpion ZS-256 support —
 decode/paging/ROM window, MNI via F11, snapshots (z80 hw=10, ARCH_SCORP),
 real-CPU boot verification. Not yet merged to main; Quartus build not yet run
 (sim-first policy — review the diff before any Quartus build).

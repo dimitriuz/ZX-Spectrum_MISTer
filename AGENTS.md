@@ -58,6 +58,25 @@ state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on 
    ym2149) or palette/LUT code MUST be verified value-by-value against the
    original with a script (all indices × all inputs), not just by the battery.
 
+## Quartus build (FPGA firmware)
+
+- Toolchain: **Quartus Prime 17.0.2 Lite** via Docker container `raetro/quartus:17.0`
+  (built from Intel's official installer; no license needed for Cyclone V).
+  The version matters: `sys/sys.qip` selects the PLL QIP by toolchain version
+  (`pll_q<ver>.qip`) — the repo ships `pll_q13.qip` + `pll_q17.qip`, so build with
+  17.x (or 13.1 via `ZX-Spectrum_Q13.qpf`). The official Intel container
+  (`alterafpga/quartus-std`) requires a subscription license — do not use it.
+- Build: `docker run --rm -v "$PWD":/work -w /work raetro/quartus:17.0 bash -lc "/opt/intelFPGA/quartus/bin/quartus_sh --flow compile ZX-Spectrum"`
+  (~12 min on 16 cores; target 5CSEBA6U23I7 = DE10-Nano).
+- Output: `output_files/ZX-Spectrum.rbf` (`GENERATE_RBF_FILE ON`) → copy to
+  `releases/` as `ZX-Spectrum_YYYYMMDD.rbf`. Reference timing of the 2026-09-03
+  build: worst setup slack +0.233 ns, hold +0.183 ns @ 50 MHz.
+- **iverilog vs Quartus:** Icarus silently accepts multiple `always` blocks
+  driving one reg; Quartus rejects it (Error 10028). Keep one driver per reg —
+  run `python3 tools/multidriver_scan.py ZX-Spectrum.sv rtl/*.sv rtl/*.v sys/*.sv sys/*.v`
+  before building (known false positive: relational comparisons like `(a <= b)`).
+
+
 ## Invariants (do not break)
 
 - **No behavior change to existing machines (0–4).** The regression trace diff

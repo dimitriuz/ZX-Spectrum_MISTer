@@ -9,7 +9,7 @@ error in Quartus). Known blind spot: relational comparisons like
 (a <= b) inside expressions are indistinguishable from assignments at text
 level, so hits should be eyeballed before acting.
 """
-import re, sys
+import os, re, sys
 from collections import defaultdict
 
 KEYWORDS = {'begin','end','if','else','case','casex','casez','default','for',
@@ -17,6 +17,13 @@ KEYWORDS = {'begin','end','if','else','case','casex','casez','default','for',
             'always_ff','always_latch','module','endmodule','function','endfunction',
             'task','endtask','generate','endgenerate','localparam','parameter',
             'reg','logic','wire','integer','genvar','assign','posedge','negedge'}
+
+# Investigated false positives, keyed by (file basename, module, var).
+# Add here only after manual verification; each entry needs the reason.
+DISMISSED = {
+    ('ula.sv', 'ULA', 'vc_next'):
+        "relational comparison '(vc_next <= 307)' in an expression; single real driver (always @(*) block)",
+}
 
 def strip_comments(src):
     src = re.sub(r'//.*', '', src)
@@ -108,10 +115,15 @@ def main():
             blocks = set(b for _, b in sites)
             if len(blocks) >= 2:
                 lines = ', '.join(str(l) for l, _ in sites)
+                key = (os.path.basename(f), mod, name)
+                if key in DISMISSED:
+                    print(f"{f} [{mod}]: '{name}' dismissed ({DISMISSED[key]})")
+                    continue
                 print(f"{f} [{mod}]: '{name}' driven by {len(blocks)} always blocks (lines {lines})")
                 problems = True
     if not problems:
         print("OK: no multi-driver variables found")
+    sys.exit(1 if problems else 0)
 
 if __name__ == '__main__':
     main()

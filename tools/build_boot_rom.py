@@ -18,12 +18,24 @@ def main():
     ap.add_argument("--base", help="existing 192KB boot.rom to extend")
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--scorp", default="tools/scorp294.rom")
-    ap.add_argument("-o", "--out", required=True)
+    ap.add_argument("-o", "--out", help="output file (build modes)")
     ap.add_argument("--hex", dest="hexout", help="also write flat $readmemh hex here")
+    ap.add_argument("--check", metavar="ROM",
+                    help="verify an existing 256KB boot.rom (size + Scorpion pages) and print SHA256")
     a = ap.parse_args()
 
     scorp = open(a.scorp, "rb").read()
     assert len(scorp) == 0x10000
+
+    if a.check:
+        rom = open(a.check, "rb").read()
+        assert len(rom) == 0x40000, f"boot.rom must be 256KB, got {len(rom)}"
+        assert rom[0x30000:] == scorp, "Scorpion pages (chunks 12-15) do not match tools/scorp294.rom"
+        print(f"OK: {a.check} is a valid 256KB boot.rom (Scorpion pages verified)")
+        print("full sha256:", hashlib.sha256(rom).hexdigest())
+        return
+
+    if not a.out: sys.exit("need -o/--out (or --check)")
 
     if a.base:
         base = open(a.base, "rb").read()

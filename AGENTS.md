@@ -60,6 +60,9 @@ state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on 
 
 ## Quartus build (FPGA firmware)
 
+- **Full pipeline: `tools/build.sh`** (sim gate → multi-driver pre-scan →
+  compile → stage rbf → boot.rom check); every step documented in
+  `docs/build.md`. Flags: `--skip-sim`, `--skip-quartus`, `--rebuild-rom [FILE|upstream]`.
 - Toolchain: **Quartus Prime 17.0.2 Lite** via Docker container `raetro/quartus:17.0`
   (built from Intel's official installer; no license needed for Cyclone V).
   The version matters: `sys/sys.qip` selects the PLL QIP by toolchain version

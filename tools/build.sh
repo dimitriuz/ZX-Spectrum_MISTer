@@ -41,7 +41,9 @@ if [ "$SKIP_SIM" = 0 ]; then
     step "1/5 sim verification gate (battery + regression diff)"
     for t in smoke regression alias paging romchain mni snapscorp; do
         printf -- "--- %s\n" "$t"
-        if ! ./sim/run_sim.sh "$t" | grep -E "PASS|FAIL"; then
+        out=$(./sim/run_sim.sh "$t") || { echo "GATE FAILED: $t exited non-zero" >&2; exit 1; }
+        echo "$out" | grep -E "PASS|FAIL" || true
+        if ! echo "$out" | grep -q "PASS" || echo "$out" | grep -q "FAIL"; then
             echo "GATE FAILED: test $t did not report PASS" >&2
             exit 1
         fi
@@ -91,7 +93,7 @@ if [ -n "$REBUILD_ROM" ]; then
         BASE="$REBUILD_ROM"
     fi
     python3 tools/build_boot_rom.py --base "$BASE" -o releases/boot.rom
-    [ "$REBUILD_ROM" = "upstream" ] && rm -f "$BASE"
+    if [ "$REBUILD_ROM" = "upstream" ]; then rm -f "$BASE"; fi
     echo "!! boot.rom changed — update the SHA256 line in README.md and commit both files."
 else
     python3 tools/build_boot_rom.py --check releases/boot.rom

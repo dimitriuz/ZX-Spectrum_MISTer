@@ -157,7 +157,9 @@ boot.rom is a collection of required ROMs, however it does not contain a full se
 Since the Scorpion extension boot.rom is **256 KB** (was 192 KB). Current file SHA256: `a64828d45e2e73501916e1bee7beb30f028aa4ea181a9a60720bdeef28ec2b40`. To rebuild it from a 192 KB release ROM: `python3 tools/build_boot_rom.py --base <boot.rom> -o boot.rom` (Scorpion source ROM: `tools/scorp294.rom`).
 
 ### Scorpion ZS-256
-Select **Scorpion ZS-256** in the OSD **Memory** menu. This mode implements the base model: 128K RAM with 256 KB paging via #7FFD/#1FFD, ROM0 (Scorpion BASIC 128) at #0000.
+Select **Scorpion ZS-256** in the OSD **Memory** menu. This mode implements the base model: 256 KB of RAM (16 x 16 KB banks) paged via #7FFD/#1FFD, ROM0 (Scorpion BASIC 128) at #0000.
 - TR-DOS disk images (TRD/SCL) work through the existing Beta 128 path; ROM3 holds the TR-DOS 5.03 entry ROM.
+
+DivMMC/esxdos is disabled in this mode (a real Scorpion has no DivMMC; the built-in Beta 128 covers disk access).
 
 Limitations: #FE selective decode is not modeled (standard ULA-48 #FE behavior), the Scorpion's 58-key keyboard matrix is not emulated (standard key mapping — key positions differ from a real Scorpion keyboard), and Turbo+/GMX variants are out of scope.

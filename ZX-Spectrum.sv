@@ -165,7 +165,7 @@ always @(posedge clk_sys) begin
 	ce_spi    <= vsd_sel | ((status[33] | !counter[1]) & !counter[0]);
 end
 
-reg [4:0] turbo_req;
+wire [4:0] turbo_req;
 always_comb begin
 	casex({tape_active & ~status[6], status[24:22]})
 		 'b1XXX: turbo_req = 5'b00001;
@@ -244,17 +244,13 @@ wire        sd_wr_mmc;
 wire [31:0] sd_lba_mmc;
 wire [7:0]  sd_buff_din_mmc;
 
-wire [31:0] sd_lba[2];
-assign sd_lba[0] = plus3_fdd_ready ? sd_lba_plus3 : sd_lba_wd;
-assign sd_lba[1] = sd_lba_mmc;
+wire [31:0] sd_lba[2] = '{plus3_fdd_ready ? sd_lba_plus3 : sd_lba_wd, sd_lba_mmc};
 wire  [1:0] sd_rd = {sd_rd_mmc, plus3_fdd_ready ? sd_rd_plus3 : sd_rd_wd};
 wire  [1:0] sd_wr = {sd_wr_mmc, plus3_fdd_ready ? sd_wr_plus3 : sd_wr_wd};
 wire  [1:0] sd_ack;
 wire  [8:0] sd_buff_addr;
 wire  [7:0] sd_buff_dout;
-wire  [7:0] sd_buff_din[2];
-assign sd_buff_din[0] = plus3_fdd_ready ? sd_buff_din_plus3 : sd_buff_din_wd;
-assign sd_buff_din[1] = sd_buff_din_mmc;
+wire  [7:0] sd_buff_din[2] = '{plus3_fdd_ready ? sd_buff_din_plus3 : sd_buff_din_wd, sd_buff_din_mmc};
 wire        sd_buff_wr;
 wire  [1:0] img_mounted;
 wire [63:0] img_size;
@@ -268,7 +264,6 @@ wire  [7:0] ioctl_index;
 wire        ioctl_wait;
 
 wire [21:0] gamma_bus;
-reg new_vmode = 0;   // declared before hps_io (first reference) for tool portability
 
 hps_io #(.CONF_STR(CONF_STR), .VDNUM(2)) hps_io
 (
@@ -503,7 +498,7 @@ wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
 wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
 wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
-wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further paging writes until reset
+wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further #7FFD writes until reset (#1FFD stays writable)
 reg  [2:0] page_128k;
 
 reg  [3:0] page_rom;
@@ -571,8 +566,8 @@ always @(posedge clk_sys) begin
 			if(m1 && ~old_m1 && ~plusd_en && ~mod[0] && (addr == 'h66) && ~plus3) shadow_rom <= 1; 
 
 			if(io_wr & ~old_wr) begin
-				if(scorp_1ffd_wr & ~scorp_lock) begin
-					scorp_1ffd <= cpu_dout;
+				if(scorp_1ffd_wr) begin
+					scorp_1ffd <= cpu_dout;      //#1FFD is not covered by the #7FFD lock
 				end else if(page_write & ~scorp_lock) begin
 					page_reg  <= cpu_dout;
 					if(p1024 & ~page_reg_p1024[2]) page_128k[2:0] <= { cpu_dout[5], cpu_dout[7:6] };
@@ -585,7 +580,7 @@ always @(posedge clk_sys) begin
 			end
 		end
 		if(mni_pending) begin
-			scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}; // MNI latch (ROM2); not gated by scorp_lock
+			scorp_1ffd <= {scorp_1ffd[7:2], 1'b1, scorp_1ffd[0]}; // MNI sets bit 1 only (hardware latch, not a port write)
 			mni_pending <= 0;
 		end
 		if(mni_pulse & scorp) mni_pending <= 1; // single driver: reset above clears, this sets
@@ -594,7 +589,7 @@ end
 
 
 ////////////////////  ULA PORT  ///////////////////
-reg [2:0] border_color = 3'b000;   // FPGA flip-flops power up at 0; Scorpion v2.94 never writes #FF during boot, so the sim must match the hardware default
+reg [2:0] border_color = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
 reg       ear_out;
 reg       mic_out;
 
@@ -884,6 +879,7 @@ video_mixer #(.LINE_LENGTH(896), .GAMMA(1)) video_mixer
 
 assign VGA_SL = {scale==3, scale==2};
 
+reg new_vmode = 0;
 always @(posedge clk_sys) begin
 	reg [1:0] vmode;
 	
@@ -974,7 +970,7 @@ always @(posedge clk_sys) begin
 	
 	if(reset) begin
 		vsd_sel  <= (vhd_en && !status[33:32]);
-		mmc_mode <= (vhd_en || status[33:32]) ? (status[31:30] ? status[31:30] : 2'b11) : 2'b00;
+		mmc_mode <= ((vhd_en || status[33:32]) && (status[12:10] != 5)) ? (status[31:30] ? status[31:30] : 2'b11) : 2'b00; //no DivMMC on Scorpion
 	end
 end
 
@@ -1133,7 +1129,7 @@ always @(posedge clk_sys) begin
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
 			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & (active_48_rom | scorp) & ~&mmc_mode) trdos_en <= 1;
+				else if((addr[13:8] == 'h3D) & (active_48_rom | (scorp & ~scorp_1ffd[0] & ~scorp_1ffd[1])) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
 	end

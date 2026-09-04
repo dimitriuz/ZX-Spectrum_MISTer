@@ -35,28 +35,43 @@ Note: page 1 is **not** byte-identical to either existing 48K BASIC chunk in boo
 ## 2. Key decisions (agreed)
 
 - **MNI = F11.** The core's bare-F11 NMI key is reused: in Scorpion mode, pressing F11 writes `#1FFD ← 0x02` (Shadow Monitor select) and pulses NMI — CPU jumps to #0066 which is now Shadow Monitor code. No new key; consistent with existing NMI usage (F11 = NMI for MF/+3 today).
-- **Sim-first verification.** No MiSTer hardware available yet: build an iverilog testbench harness first, flash-test on real hardware later.
 - **ROM v2.94** ("recomended" in the source repo).
 - Base ZS-256 only (no GMX graphics expander, no Turbo+ ISA/IDE).
-- **Border power-on value.** `border_color` is initialized to 0 (FPGA flip-flops power up at 0). v2.94 never writes port #FF during boot (ROM scan: no `OUT (#FF),A` in pages 0-2), so without the init the Scorpion border would be X in sim, unlike real hardware where the ULA latch powers up defined.
+- **Border power-on value.** `border_color` is explicitly initialized to 0, matching the FPGA flip-flop power-up state. v2.94 never writes port #FF during boot (ROM scan: no `OUT (#FF),A` in pages 0-2), so the border latch is never written before the user reaches TR-DOS - the initializer makes that starting value explicit rather than implicit.
 
-## 3. SDRAM aliasing (derived, to be confirmed by sim)
+## 3. SDRAM address map
 
-The SDRAM controller (`rtl/sdram.sv`, MT48LC16M16A2) decodes a 25-bit logical address as:
-`bank = addr[23]`, `row = addr[13:1]`, `column = addr[19:14]`, `byte = addr[0]`; bits [24, 22:20] are ignored.
+The SDRAM controller (`rtl/sdram.sv`, MT48LC16M16A2) decodes the full 25-bit logical
+address — there is no aliasing:
 
-Consequences (verified against known-good mappings):
-- boot.rom chunks (host download, ioctl index 0, base `0x150000`): chunk *i* → column `20+i`.
-- Existing ROM window (`{3'b101, page_rom, r}` = `0x140000 + p*0x4000`): page_rom *p* → column `16+p`, i.e. file offset `(p−4)*0x4000`. Cross-checked against the README chunk table: p=5 (trdos_en) → TR-DOS @ 0x4000 ✓, p=4 (shadow_rom) → glukpen @ 0x00000 ✓, p=12 (plusd_mem) → +D ROM @ 0x20000 ✓, p=13 → MF128+Genie slot @ 0x24000 ✓, p=14 (MF3/+3) → mf3 @ 0x28000 ✓, p=15 (zx48) → 48.rom @ 0x2C000 ✓.
+`bank = addr[24:23]` (line 173), `row = addr[13:1]` (line 172), `column = addr[22:14]`
+(line 181), `byte select = addr[0]`.
 
-New Scorpion chunks appended to boot.rom at file offsets `0x30000…0x3FFFF` land in **columns 32–35** (base `0x150000`: column = 20 + offset/0x4000), which no existing ROM-window value reaches (existing prefix `{3'b101,…}` → columns 16–31). Solution: a **mode-gated ROM window prefix** — in Scorpion mode the #0000–#3FFF decode uses `{3'b110, page_rom, r}` (`0x180000 + p*0x4000` → column `32+p`). Existing machines keep the old prefix — zero behavior change for them.
+So a logical address is simply a linear byte address into the 32 MB part, and the ROM
+window prefix has to be chosen to land exactly on where the host put the data:
 
-| Scorpion page_rom | Column | boot.rom offset | Content |
+- boot.rom (host download, ioctl index 0) is written at base `0x150000`
+  (`load_addr`, `ZX-Spectrum.sv:415`), so file offset *o* lives at `0x150000 + o`.
+- The existing ROM window `{3'b101, page_rom, addr[13:0]}` = `0x140000 + p*0x4000`
+  therefore reaches file offset `(p-4)*0x4000`. Cross-checked against the README chunk
+  table: p=4 (shadow_rom) → glukpen @ 0x00000 ✓, p=5 (trdos_en) → TR-DOS @ 0x04000 ✓,
+  p=12 (plusd_mem) → +D ROM @ 0x20000 ✓, p=13 → MF128+Genie @ 0x24000 ✓,
+  p=14 (MF3/+3) → mf3 @ 0x28000 ✓, p=15 (zx48) → 48.rom @ 0x2C000 ✓.
+  With only 4 bits of `page_rom`, that window tops out at file offset 0x2FFFF — exactly
+  the end of the old 192 KB boot.rom.
+
+The four Scorpion pages are appended at file offsets `0x30000…0x3FFFF`, i.e. logical
+`0x180000…0x18FFFF`, which the existing prefix cannot express. Solution: a **mode-gated
+ROM window prefix** — in Scorpion mode the #0000–#3FFF decode uses
+`{3'b110, page_rom, addr[13:0]}` (`0x180000 + p*0x4000`). Existing machines keep the old
+prefix, so their mapping is bit-for-bit unchanged.
+
+| Scorpion page_rom | Logical address | boot.rom offset | Content |
 |---|---|---|---|
-| 0 | 32 | 0x30000 | ROM0 Scorpion BASIC 128 |
-| 1 | 33 | 0x34000 | ROM1 48K BASIC |
-| 2 | 34 | 0x38000 | ROM2 Shadow Service Monitor |
-| 3 | 35 | 0x3C000 | ROM3 TR-DOS 5.03 |
+| 0 | 0x180000 | 0x30000 | ROM0 Scorpion BASIC 128 |
+| 1 | 0x184000 | 0x34000 | ROM1 48K BASIC |
+| 2 | 0x188000 | 0x38000 | ROM2 Shadow Service Monitor |
+| 3 | 0x18C000 | 0x3C000 | ROM3 TR-DOS 5.03 |
 > Note: speccy-bootcamp's "ROM Page Contents" table lists ROM2 = TR-DOS and ROM3 = Shadow Monitor, but that contradicts both Fuse (`scorpion.c`: `#1FFD` bit 1 → rom 2) and the worldofspectrum Scorpion FAQ ("port 1ffd D1 — selects ROM expansion. this rom contains main part of service monitor"). This implementation follows Fuse/worldofspectrum: Shadow Monitor is the `#1FFD`-bit-1 ROM; TR-DOS enters via the Beta FDC ROMCS path (emulated by `trdos_en`).
 
 ## 4. Per-file changes
@@ -70,12 +85,13 @@ New Scorpion chunks appended to boot.rom at file offsets `0x30000…0x3FFFF` lan
    - `#1FFD` bit 0 set → page_rom = 0, with a decode override putting RAM bank 0 at #0000 (see 5);
    - `#1FFD` bit 1 set → page_rom = 2 (Shadow Monitor);
    - else `#7FFD` bit 4: 1 → page_rom = 1 (48K BASIC), 0 → page_rom = 0 (BASIC 128).
-   - TR-DOS entry (ROM3) is reached by the built-in Beta 128 FDC path, not via #0000 ROM select — in Scorpion mode `trdos_en` forces page_rom = 3 while a disk is active.
+   - TR-DOS entry (ROM3) is reached by the built-in Beta 128 FDC path, not via #0000 ROM select — in Scorpion mode `trdos_en` forces page_rom = 3 while a disk is active. The #3Dxx M1 trap is gated `active_48_rom | (scorp & ~scorp_1ffd[0] & ~scorp_1ffd[1])`: reachable from ROM0 (the 128 menu's TR-DOS entry) and ROM1 (48 BASIC), but never from RAM bank 0 or from the Shadow Monitor.
 5. **#1FFD register**: new `reg [7:0] scorp_1ffd`. Write decode: `scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]` (#1FFD), latching `cpu_dout` on the io_wr edge. Cleared to 0 on reset. Port read conformance (speccy-bootcamp): #7FFD is **write-only** (no mux arm — reads fall through to the ULA port like other unattached ports); #1FFD reads return **#FF** on non-Turbo boards (this core models the base ZS-256, no Turbo), so `cpu_din` has one Scorpion arm: `(scorp & addr[14:0]==15'h1FFD) ? 8'hFF`. Shadow Monitor exit is a #1FFD *write* (=0), not a read.
-6. **Paging** (lines 420–422): in Scorpion mode the map matches real hardware (Fuse `scorpion_memory_map` + speccy-bootcamp): #4000–#7FFF stays fixed to bank 5, #8000–#BFFF fixed to bank 2, and only #C000–#FFFF is paged: `ram_addr = {1'b0, scorp_page[3:0], addr[13:0]}` where `scorp_page = {scorp_1ffd[4], page_reg[2:0]}`. Bank *b* therefore occupies SDRAM column *b* (offsets 0–0x3FFF within the bank). **Bit-5 lockout** (worldofspectrum FAQ: "D5 — 1 in this bit will block further output in port 7FFD, until reset"; Fuse `spec128_memoryport_write`: `if(locked) return; … locked = b & 0x20`): `scorp_lock = scorp & page_reg[5]` gates both the #7FFD and #1FFD write latches — the locking write itself applies, all later paging writes are ignored until machine reset. Implemented as a separate wire (not via `page_disable`) so the tape player's `.mode48k(page_disable)` input is unaffected in Scorpion mode.
+6. **Paging** (lines 420–422): in Scorpion mode the map matches real hardware (Fuse `scorpion_memory_map` + speccy-bootcamp): #4000–#7FFF stays fixed to bank 5, #8000–#BFFF fixed to bank 2, and only #C000–#FFFF is paged: `ram_addr = {1'b0, scorp_page[3:0], addr[13:0]}` where `scorp_page = {scorp_1ffd[4], page_reg[2:0]}`. Bank *b* therefore occupies SDRAM column *b* (offsets 0–0x3FFF within the bank). **Bit-5 lockout** (worldofspectrum FAQ: "D5 — 1 in this bit will block further output in port 7FFD, until reset"; Fuse `spec128_memoryport_write`: `if(locked) return; … locked = b & 0x20`): `scorp_lock = scorp & page_reg[5]` gates the **#7FFD** write latch only — the locking write itself applies, all later #7FFD writes are ignored until machine reset. #1FFD is deliberately *not* locked: both the FAQ text and Fuse scope the lock to #7FFD, and locking #1FFD would trap the machine in the Shadow Monitor, whose exit path is a #1FFD write (48 BASIC sets bit 5 on entry, so this is the common case, not a corner case). Implemented as a separate wire (not via `page_disable`) so the tape player's `.mode48k(page_disable)` input is unaffected in Scorpion mode.
 7. **vram mirror** (line ~485): no new logic needed — the existing `vram_we` first term `((ram_addr[24:16]==1) & ram_addr[14])` already mirrors every legitimate Scorpion screen-bank write into the ULA dpram at `{bank-half, addr[13:0]}` (column 5 via #4000 → half 0; columns 5/7 via paged #C000 → half = column[1]). An earlier draft added a `scorp_vram` term, but it mirrored non-screen writes through #C000/#8000 and was removed; Scorpion keeps the identical mirror semantics as all other machines. Verified by `test_paging` dpram checks (mirror on page 5/7 and #4000, no mirror on data banks).
-8. **MNI (F11)** — *planned, Task 4 (not yet in RTL)*: in the F11 NMI block (lines 392–396), when `scorp` and bare F11 (mod==0) rising edge: also set `scorp_1ffd <= {6'b0, 1'b1, scorp_1ffd[0]}` before/at the NMI pulse so the CPU's #0066 fetch lands in Shadow Monitor (bit 1 = ROM2; bit 0 kept). The MNI latch is hardware (not a port write) so it will NOT be gated by the bit-5 lockout. Clearing happens by software writing #1FFD (monitor exit) — no extra hardware latch needed.
+8. **MNI (F11)**: on a bare-F11 rising edge (mod==0) in Scorpion mode, `mni_pulse` sets `mni_pending`, and the paging block applies `scorp_1ffd <= {scorp_1ffd[7:2], 1'b1, scorp_1ffd[0]}` — a hardware set of **bit 1 only**, so the CPU's #0066 fetch lands in the Shadow Monitor while the extended page bit (bit 4 = `scorp_page[3]`) and every other bit survive. Clobbering bit 4 here would silently repage #C000 under the interrupted program, and since #1FFD is write-only nothing could restore it. The latch is hardware, not a port write, so it is not gated by the bit-5 lockout. Clearing happens by software writing #1FFD (monitor exit). Routing the set through `mni_pending` keeps `scorp_1ffd` single-driver (Quartus Error 10028).
 9. **snap_loader** (line ~283): add `ARCH_SCORP` parameter, pass to instance; on Scorpion snapshot load restore `page_reg` and `scorp_1ffd`.
+10. **DivMMC disabled** (line ~977): `mmc_mode` is forced to `2'b00` in Scorpion mode. A real Scorpion has no DivMMC, and leaving it enabled is actively broken here — `mmc_ram_en` outranks the ROM decode in the `ram_addr` casex, so DivMMC RAM would page in at #2000–#3FFF, while `mmc_rom_en` can never select the esxdos ROM because the Scorpion branch bypasses the `page_rom` casex. Forcing the mode off (rather than gating the consumers) also keeps `~&mmc_mode` true, so the TR-DOS #3Dxx trap still works with a VHD mounted.
 
 ### rtl/snap_loader.sv
 
@@ -106,21 +122,35 @@ Host streams the whole file with index 0 — no host-side changes.
 - boot.rom table: rows 16–19 above + full-file SHA256 of the new 256 KB image.
 - OSD docs: Memory option value, F11 = MNI/Shadow Monitor entry in Scorpion mode.
 
-## 5. Verification plan (sim first)
+## 5. Verification plan (hardware)
 
-1. **Testbench** (iverilog): instantiate `emu` with stubbed sys ports; feed clk_sys; simulate the MiSTer host's boot.rom download (index 0, 16 KB blocks).
-2. **Alias check**: read back every new chunk through its Scorpion ROM window (page_rom 4–7) and byte-compare against the source file — confirms §3 on real controller logic before any hardware exists.
-3. **Boot test**: machine=Scorpion, reset → CPU must execute ROM0; verify BASIC banner bytes at #5000+ after boot sequence, screen RAM (bank 5) updated, border color set.
-4. **Paging test**: OUT (#7FFD)/OUT (#1FFD) sequences per §1 table — verify bank contents appear at the right windows, ROM select chain (incl. Shadow Monitor via #1FFD bit 1), screen-bank switch (bit 3) reflected in vram/video address.
-5. **MNI test**: F11 pulse → NMI + #1FFD=0x02 → CPU at #0066 in ROM2; then write #1FFD=0 → ROM0 restored.
-6. **Snapshot test**: load a Scorpion .z80 (hw=10) — registers restored, machine runs.
-7. **Regression**: existing machines (ZX48/ZX128/+3/P1024) decode unchanged — diff ram_addr for identical stimulus pre/post change in sim.
-8. **Hardware flash-test** (later): build .rbf, flash, boot Scorpion BASIC, run a TR-DOS disk image, enter Shadow Monitor via F11.
+Build with Quartus 17.0.2 (Cyclone V, 5CSEBA6U23I7), copy `output_files/ZX-Spectrum.rbf`
+to the DE10-Nano, and run through:
+
+1. **Boot**: Memory = Scorpion ZS-256, reset → ROM0 "Scorpion BASIC 128" banner.
+2. **ROM select**: enter 48 BASIC (`#7FFD` bit 4) → ROM1 banner; confirm the 48K lock
+   (`#7FFD` bit 5) blocks further #7FFD writes but still allows #1FFD.
+3. **Paging**: from BASIC, `OUT` sequences over `#7FFD` bits 2:0 and `#1FFD` bit 4 —
+   all 16 banks addressable at #C000, #4000 pinned to bank 5, #8000 pinned to bank 2.
+4. **Screen bank**: `#7FFD` bit 3 → display switches between bank 5 and bank 7.
+5. **MNI**: F11 → Shadow Service Monitor at #0066. Page a high bank (8–15) at #C000
+   first and confirm it is *still* there inside the monitor (bit-4 preservation), then
+   exit via the monitor's own exit and confirm ROM0/ROM1 and the bank both come back.
+6. **TR-DOS**: mount a TRD/SCL, enter TR-DOS from the ROM0 menu and from 48 BASIC
+   (`RANDOMIZE USR 15616`); read and write a file. Confirm the trap does *not* fire
+   while the Shadow Monitor is paged in.
+7. **Snapshot**: load a Scorpion .z80 (hw=10) — registers, both paging ports and all
+   16 banks restored.
+8. **No regression on machines 0–4**: boot 48K, 128K, +2A/+3, Pentagon 128 and
+   Pentagon 1024; on the +3 specifically, mount a .dsk, **reset, and confirm the drive
+   is still ready** (this is the path the reverted `u765.sv` change broke).
 
 ## 6. Known limitations / stretch goals
 
 - **#FE selective decode** (A4,A3,A1,A0 per bootcamp notes) not modeled — standard ULA-48 #FE used. Needs Turbo+ schematics/GAL netlist for exactness.
 - **Keyboard matrix**: PS2 keys map via the existing membrane scan-code table; the Scorpion's 58-key full-size matrix is not emulated (no functional loss for most software; key *positions* differ from a real Scorpion keyboard).
 - **MNI flag port**: real HW likely exposes an MNI-pressed flag at some port that ROM0's NMI handler reads; we bypass that by latching the shadow page directly on F11. If ROM0's handler misbehaves without the flag, revisit (may need a fake flag byte at a TBD address).
+- **DivMMC / esxdos** is disabled in Scorpion mode (no such hardware on a real Scorpion; the built-in Beta 128 covers disk access).
 - **Turbo+ / GMX** variants: out of scope.
 - **Contention approximation**: see §4 ula.sv note.
+- **Untested on hardware at time of writing** — §5 has not been executed yet.

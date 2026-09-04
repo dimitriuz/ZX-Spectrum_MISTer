@@ -29,7 +29,7 @@ module jt12_div(
     output  reg     clk_en_ssg
 );
 
-parameter use_ssg=0, num_ch=4;   // num_ch default for tool portability (always overridden at instantiation)
+parameter use_ssg=0, num_ch;
 
 reg [3:0] opn_pres, opn_cnt;
 reg [2:0] ssg_pres, ssg_cnt;

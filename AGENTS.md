@@ -5,14 +5,13 @@ Working guide for agents (and humans) in this repository.
 ## What this is
 
 SystemVerilog/Quartus FPGA core of the ZX Spectrum family for MiSTer. Branch
-`scorpion-zs256` adds the Scorpion ZS-256 machine (machine #5). All changes are
-verified sim-first with the iverilog harness in `sim/`; Quartus builds happen
-only after sim is green.
+`scorpion-zs256` adds the Scorpion ZS-256 machine (machine #5). Changes are verified by
+building with Quartus and running on a DE10-Nano — see "Verification path" below.
 
 ## Workflow rules
 
 - **Do all calculations by scripts** (python3, awk, xxd — anything that runs): hex decoding, bit-field math, address/SDRAM mapping, ROM scans/disassembly, checksums. Never compute these in your head; write a script, run it, trust its output.
-- **Do not use subagents.** Work directly in the current session: read, edit, run sim, iterate. This repo's work is a tight sim-debug loop — delegation adds overhead without useful parallelism.
+- **Do not use subagents** for the edit/build loop — it is tight and sequential, and delegation adds overhead without useful parallelism. (A one-shot review pass over a finished diff is fine.)
 
 ## Repo layout
 
@@ -24,45 +23,38 @@ only after sim is green.
 | `tools/` | ROM build scripts; `scorp294.rom` = Scorpion v2.94 source pages |
 | `releases/boot.rom` | 256 KB generated boot image — rebuild with `tools/build_boot_rom.py` (SHA-verified) |
 | `docs/scorpion-zs256-design.md` | Authoritative Scorpion reference: hardware semantics, decisions, limitations |
-| `sim/` | Iverilog testbench harness — not part of the FPGA build |
+| `sim/` | Retired iverilog harness — reference only, does not compile (see below) |
 
-## Sim pipeline (primary verification path)
+## Verification path: hardware
 
-- Docker image `xzs-sim:1.0` (Arch Linux, iverilog v12, `-g2012`).
-  **iverilog rejects `-O` entirely** — no optimization flags exist.
-- Run tests: `./sim/run_sim.sh <test>` where test is one of
-  `smoke | regression | alias | paging | romchain | mni | snapscorp | boot`.
-- Default CPU is a fetch-only stub (`sim/t80_stub.v`) — fast; verifies
-  decode/memory/paging without executing code.
-- `REALCPU=1 ./sim/run_sim.sh boot` compiles TV80 (open-source Z80 in
-  `sim/cpu/`, permissive license) as `T80pa` and executes real v2.94 code.
-- Outputs land in `sim/out/` (gitignored except `regression_base.txt`).
+The iverilog harness in `sim/` is **retired**. It only ever compiled because a set of
+"behavior-preserving" portability patches had been applied to `rtl/` and `sys/`
+(unpacked-array ports, assignment-pattern initialisers, `inout reg`). Those patches have
+been reverted — they were churn in files the Scorpion feature does not touch, and two of
+them were not behavior-preserving at all:
 
-Speeds — plan test windows accordingly:
+- `sys/video_mixer.sv` gained a width bug in the `HALF_DEPTH && !GAMMA` path (latent
+  here, live for any core that uses it).
+- `rtl/u765.sv` moved `image_ready`'s **power-on** initialiser into the **reset** block.
+  Nothing restored it (the "restart mounting" guard only fires when a scan is already in
+  flight), so any reset — OSD Reset, F10, F11+mod, VHD mount — permanently marked a
+  mounted +3 floppy not-ready until remount.
 
-| CPU | Speed | Example |
-|---|---|---|
-| stub | ~7.5x slower than real time | full battery ≈ 25 min |
-| REALCPU (TV80) | ~22,000x slower (~5k core clocks/s measured) | 1 frame = 2,236,416 core clocks ≈ 7.5 min wall |
+Lesson worth keeping: `reg x[2] = '{0,0};` is a power-up value, not a reset value; moving
+one into `if(reset)` changes behavior. And a CPU/memory regression trace cannot catch a
+regression in the FDC, the audio LUTs or the video path — scope your gate to what it
+actually observes.
 
-Use early exit in long tests; the boot test exits when v2.94's post-init paging
-state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on this host).
-
-**Gates before committing any RTL change:**
-
-1. Full battery green: smoke, regression, alias, paging, romchain, mni, snapscorp
-2. `diff sim/out/regression_base.txt sim/out/regression_new.txt` → byte-clean
-3. Scorpion behavior changes: REALCPU boot test as well
-4. **Coverage caveat:** the regression trace captures CPU/memory state only —
-   NOT audio or video output. Any conversion of sound-module tables (saa1099,
-   ym2149) or palette/LUT code MUST be verified value-by-value against the
-   original with a script (all indices × all inputs), not just by the battery.
+The files under `sim/` are left in the tree for reference but **do not compile against the
+current RTL**. Verify on the DE10-Nano instead; the hardware test plan is
+§5 of `docs/scorpion-zs256-design.md`.
 
 ## Quartus build (FPGA firmware)
 
 - **Full pipeline: `tools/build.sh`** (sim gate → multi-driver pre-scan →
   compile → stage rbf → boot.rom check); every step documented in
   `docs/build.md`. Flags: `--skip-sim`, `--skip-quartus`, `--rebuild-rom [FILE|upstream]`.
+  **Always pass `--skip-sim`** — the sim gate cannot run any more (see above).
 - Toolchain: **Quartus Prime 17.0.2 Lite** via Docker container `raetro/quartus:17.0`
   (built from Intel's official installer; no license needed for Cyclone V).
   The version matters: `sys/sys.qip` selects the PLL QIP by toolchain version
@@ -82,19 +74,13 @@ state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on 
 
 ## Invariants (do not break)
 
-- **No behavior change to existing machines (0–4).** The regression trace diff
-  is the gate; if a change must affect them, get explicit approval and
-  re-baseline `regression_base.txt`. Scorpion is machine #5
-  (`status[12:10] == 5`).
+- **No behavior change to existing machines (0–4).** Scorpion is machine #5
+  (`status[12:10] == 5`); everything Scorpion-specific is gated on the `scorp` flag.
+  Touch shared paths only when there is no gated alternative, and say so explicitly.
+  Never modify `sys/` — it is MiSTer framework code, synced from Template_MiSTer.
 - `border_color` in `ZX-Spectrum.sv` is initialized to `3'b000`: FPGA
   flip-flops power up at 0, and Scorpion v2.94 never writes port #FF during
   boot, so the init is load-bearing for Scorpion. Do not revert.
-- **Never add per-core-clock SDRAM reads from the testbench.** Bus-side
-  sampling contends with the CPU's bursty traffic and slows REALCPU sim
-  20–30x (watchdog hangs). To inspect memory, use `sdr_byte()` in
-  `sim/tb_top.sv` — a hierarchical read of the SDRAM model array
-  (`sdr.mem[la[23]][{la[13:1], la[19:14]}]`, byte select `la[0]`), zero bus
-  traffic, sampled at most once per core clock.
 - Scorpion paging decode must match Fuse `scorp_fuse.c` / speccy-bootcamp:
   - CPU #4000–#7FFF **fixed to physical bank 5**; #8000–#BFFF fixed to bank 2
     (unlike the ZX128 — verified against speccy-bootcamp).
@@ -102,14 +88,22 @@ state (#7FFD=0x10/#1FFD=0x12) is reached (i≈95M core clocks ≈ 4.5 h wall on 
     dpram mirror), not the CPU decode.
   - ROM at #0000: `#1FFD[0]` → RAM bank 0; else `#1FFD[1]` → ROM2 (Shadow
     Monitor); else `#7FFD[4]` ? ROM1 : ROM0.
-  - Paged bank at #C000: `scorp_page = {#1FFD[4], #7FFD[2:0]}` (bank b = SDRAM
-    column b).
-  - `#7FFD` bit-5 lockout blocks further paging writes until reset (the locking
-    write itself applies).
+  - Paged bank at #C000: `scorp_page = {#1FFD[4], #7FFD[2:0]}`; RAM bank b sits at
+    logical address `b*0x4000`.
+  - Scorpion ROM window is `{3'b110, page_rom, addr[13:0]}` = `0x180000 + p*0x4000`,
+    which is exactly boot.rom offset `0x30000 + p*0x4000` (load base `0x150000`).
+    The SDRAM controller decodes all 25 bits — there is no aliasing to exploit.
+  - `#7FFD` bit-5 lockout blocks further **#7FFD** writes until reset (the locking
+    write itself applies). `#1FFD` is *not* locked — locking it would trap the machine
+    in the Shadow Monitor, whose exit is a #1FFD write.
 - `scorp_1ffd` has exactly one driver (io_wr or the `mni_pending` latch) — keep
-  it single-driver. MNI = F11: sets bit 1 + pulses NMI → Shadow Monitor at #0066.
+  it single-driver. MNI = F11: sets **bit 1 only** (preserve bit 4 = `scorp_page[3]`,
+  or entering the monitor silently repages #C000) + pulses NMI → Shadow Monitor at #0066.
+- DivMMC is forced off in Scorpion mode (`mmc_mode <= 0`): `mmc_ram_en` outranks the ROM
+  decode, so leaving it on pages DivMMC RAM in at #2000–#3FFF while its ROM can never be
+  selected.
 
-## Measured Scorpion v2.94 boot behavior (real CPU, for test design)
+## Measured Scorpion v2.94 boot behavior (from the retired TV80 sim — reference for what to expect on hardware)
 
 Boot flow (i = core clocks; T-state = 32 core clocks): ROM0 init + long DEC BC
 countdowns → post-init at i≈29M (~260 ms machine time) sets `#1FFD=0x12`
@@ -122,11 +116,16 @@ whole boot (no #FF write until TR-DOS is entered). **Unattended boot does not
 draw a visible screen** — the only display-file writes are three scratch bytes
 (vram offsets 0x1C1B-0x1C1D, beyond the visible 24-band region); the Shadow
 Monitor draws its UI only on user interaction. The boot test therefore treats
-screen content as informational and pins the display write path in test_paging.
+screen content as informational — do not expect a banner from an unattended boot.
 
 ## Branch state
 
-`scorpion-zs256` (forked from master `7510bb2`, pushed to `dimitriuz/ZX-Spectrum_MISTer`): complete Scorpion ZS-256 support —
-decode/paging/ROM window, MNI via F11, snapshots (z80 hw=10, ARCH_SCORP),
-real-CPU boot verification. Not yet merged to main; Quartus build not yet run
-(sim-first policy — review the diff before any Quartus build).
+`scorpion-zs256` — working branch: the Scorpion feature plus local tooling, docs, the
+retired `sim/` tree and a staged `.rbf`.
+
+`scorpion-zs256-pr` — the upstream PR branch: `ZX-Spectrum.sv`, `rtl/snap_loader.sv`,
+`README.md`, `docs/scorpion-zs256-design.md`, `releases/boot.rom`,
+`tools/build_boot_rom.py`, `tools/scorp294.rom` and nothing else. Rebase this one onto
+upstream master before opening the PR.
+
+Not yet flashed to hardware — run §5 of the design doc before opening the PR.

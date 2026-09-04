@@ -64,8 +64,19 @@ current RTL**. Verify on the DE10-Nano instead; the hardware test plan is
 - Build: `docker run --rm -v "$PWD":/work -w /work raetro/quartus:17.0 bash -lc "/opt/intelFPGA/quartus/bin/quartus_sh --flow compile ZX-Spectrum"`
   (~12 min on 16 cores; target 5CSEBA6U23I7 = DE10-Nano).
 - Output: `output_files/ZX-Spectrum.rbf` (`GENERATE_RBF_FILE ON`) → copy to
-  `releases/` as `ZX-Spectrum_YYYYMMDD.rbf`. Reference timing of the 2026-09-03
-  build: worst setup slack +0.233 ns, hold +0.183 ns @ 50 MHz.
+  `releases/` as `ZX-Spectrum_YYYYMMDD.rbf`.
+- **Quartus rewrites `ZX-Spectrum.qsf`** on every build, flipping
+  `LAST_QUARTUS_VERSION` from `"17.0.2 Standard Edition"` to `"… Lite Edition"`.
+  That is a local toolchain artifact, not a change — `git checkout -- ZX-Spectrum.qsf`
+  after each build and never commit it.
+- Reference timing, 2026-09-04 full compile of `scorpion-zs256-pr` (0 errors,
+  25 warnings, TimeQuest clean): worst setup slack **+0.573 ns**, hold **+0.241 ns**
+  @ 50 MHz; 21,944/41,910 ALMs (52 %), 1,726,661/5,662,720 block memory bits (30 %).
+  Both slacks improved on the 2026-09-03 build (+0.233 / +0.183) now that the
+  portability churn is reverted.
+- `sim/out` and `sim/work.vvp` are **root-owned** (created by the sim Docker container).
+  Git cannot unlink them, so they block branch switches and get swept up by
+  `git add -A`. Clear them once: `sudo rm -rf sim/out sim/work.vvp sim/roms sim/compile_err.log`.
 - **iverilog vs Quartus:** Icarus silently accepts multiple `always` blocks
   driving one reg; Quartus rejects it (Error 10028). Keep one driver per reg —
   run `python3 tools/multidriver_scan.py ZX-Spectrum.sv rtl/*.sv rtl/*.v sys/*.sv sys/*.v`

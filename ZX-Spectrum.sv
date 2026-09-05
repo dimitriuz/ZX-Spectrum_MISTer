@@ -505,7 +505,12 @@ wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
 wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
 wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
-wire       scorp_rom1    = ~scorp_1ffd[0] & ~scorp_1ffd[1] & page_reg[4]; // ROM1 (48K BASIC) actually paged at #0000
+// Fuse z80_ops.c arms the Beta ROMCS on a #3Dxx fetch when, for a 128-type
+// machine, machine_current->ram.current_rom != 0 - and scorpion_memory_map sets
+// current_rom = (1FFD[1] ? 2 : 7FFD[4]). So the trap arms from ROM1 *or* ROM2
+// (the Shadow Monitor), never from ROM0. Arming from ROM0 would break BASIC 128,
+// which has genuine subroutines of its own at #3D9D-#3DE9.
+wire       scorp_rom1    = ~scorp_1ffd[0] & (scorp_1ffd[1] | page_reg[4]); // ROM1 or ROM2 at #0000
 wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further #7FFD writes until reset (#1FFD stays writable)
 reg  [2:0] page_128k;
 
@@ -625,6 +630,7 @@ reg dbg_got1  = 0;
 //   dbg_dos_r0  : trdos_en high while #7FFD bit4 is clear -> page_rom = 2 (monitor)
 //   dbg_dos_sys : trdos_en high while #1FFD bit1 is set   -> page_rom forced to 2
 reg dbg_dos_r0 = 0, dbg_dos_sys = 0;
+reg [2:0] dbg_bank0 = 0; reg dbg_bank_got = 0, dbg_bank_chg = 0;
 reg [7:0] dbg_f7ffd_lost = 0;   // #7FFD the first time that happened
 reg [7:0] dbg_f7ffd, dbg_f1ffd, dbg_faddr;  // machine state at the FIRST #3Dxx fetch
 reg [7:0] dbg_n3d, dbg_ntr;                 // saturating counts
@@ -658,6 +664,10 @@ always @(posedge clk_sys) begin
 			dbg_dos_r0 <= 1;
 		end
 		if(trdos_en & scorp_1ffd[1]) dbg_dos_sys <= 1;
+		if(trdos_en) begin
+			if(~dbg_bank_got) begin dbg_bank_got <= 1; dbg_bank0 <= page_reg[2:0]; end
+			else if(page_reg[2:0] != dbg_bank0) dbg_bank_chg <= 1;
+		end
 	end
 end
 
@@ -671,8 +681,12 @@ assign     dbg_sel  = status[44] & (addr[15:8] == 8'h7A) & (addr[7:4] == 4'hF);
 //     black 0 = the CPU never even reached #3Dxx  -> the RAM gateway never ran
 //     blue  1 = reached #3Dxx but trap never armed -> gate/active_48_rom problem
 //     white 7 / magenta 3 = trap did fire
+// status[43:42]: 0=off  1=ROM page  2=repaging trace
+//  ROM page : bit2=trdos_en bit1=#1FFD[1](monitor) bit0=#7FFD[4](48K ROM)
+//  Repaging : bit2=trdos_en bit1=#7FFD bit4 cleared while TR-DOS paged
+//             bit0=#C000 bank moved while TR-DOS paged
 wire [2:0] border_color = (status[43:42] == 1) ? {trdos_en, scorp_1ffd[1], page_reg[4]}
-                        : (status[43:42] == 2) ? {trdos_en, dbg_trdos, dbg_m1_3d}
+                        : (status[43:42] == 2) ? {trdos_en, dbg_dos_r0, dbg_bank_chg}
                         : border_reg;
 reg       ear_out;
 reg       mic_out;
@@ -1151,19 +1165,7 @@ reg         fdd_side;
 reg         fdd_reset;
 wire        fdd_intrq;
 wire        fdd_drq;
-// On the Scorpion the Shadow Service Monitor and the shadow I/O space are one
-// mode: paging in ROM2 (#1FFD bit 1) enables the Beta disk ports just as the
-// #3Dxx trap does. MAME keeps the Beta ports in a view it calls io_shadow_view
-// for the same reason.
-// Measured on hardware: entering the monitor the ROM's own way (#1FFD<-#12, no
-// trap) left fdd_sel dead, so the monitor's disk code spun on a WD1793 that was
-// never decoded - the border showed ROM2 with trdos_en clear. Entering the same
-// monitor via MNI, which does set trdos_en, worked: Disk utility opened and
-// Catalogue returned a proper 'R/W error #1'. This is why the '128 TR-DOS' menu
-// item hung while '48 TR-DOS' and RANDOMIZE USR 15616 - both of which go through
-// the trap - always worked.
-wire        scorp_shadow = scorp & scorp_1ffd[1];
-wire        fdd_sel  = (trdos_en | scorp_shadow) & addr[2] & addr[1];
+wire        fdd_sel  = trdos_en & addr[2] & addr[1];
 reg         fdd_ro;
 wire  [7:0] wdc_dout = (addr[7] & ~plusd_en) ? {fdd_intrq, fdd_drq, 6'h3F} : wd_dout;
 

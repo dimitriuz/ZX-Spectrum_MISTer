@@ -158,8 +158,14 @@ Since the Scorpion extension boot.rom is **256 KB** (was 192 KB). Current file S
 
 ### Scorpion ZS-256
 Select **Scorpion ZS-256** in the OSD **Memory** menu. This mode implements the base model: 256 KB of RAM (16 x 16 KB banks) paged via #7FFD/#1FFD, ROM0 (Scorpion BASIC 128) at #0000.
-- TR-DOS disk images (TRD/SCL) work through the existing Beta 128 path; ROM3 holds the TR-DOS 5.03 entry ROM.
+- TR-DOS disk images (**TRD** only - the mount list is TRD/IMG/DSK/MGT) work through the existing Beta 128 path; ROM3 holds the TR-DOS 5.03 entry ROM.
 
 DivMMC/esxdos is disabled in this mode (a real Scorpion has no DivMMC; the built-in Beta 128 covers disk access).
+
+**Known limitation:** the **128 TR-DOS** menu entry does not work; use **48 TR-DOS** or
+`RANDOMIZE USR 15616` from 128 BASIC instead. Both reach TR-DOS and load games,
+including 256K Scorpion titles. TR-DOS repages the #C000 window during its RAM
+detector, which discards the Shadow Monitor's stack and return path; see
+`docs/scorpion-zs256-design.md` section 6 for the full analysis.
 
 Limitations: #FE selective decode is not modeled (standard ULA-48 #FE behavior), the Scorpion's 58-key keyboard matrix is not emulated (standard key mapping — key positions differ from a real Scorpion keyboard), and Turbo+/GMX variants are out of scope.

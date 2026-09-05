@@ -693,6 +693,7 @@ assign     dbg_sel  = status[44] & (addr[15:8] == 8'h7A) & (addr[7:4] == 4'hF);
 //  ROM page : bit2=trdos_en bit1=#1FFD[1](monitor) bit0=#7FFD[4](48K ROM)
 //  Repaging : bit2=trdos_en bit1=#7FFD bit4 cleared while TR-DOS paged
 //             bit0=#C000 bank moved while TR-DOS paged
+// status[43:42]: 0=off  1=ROM page  2=repaging trace
 wire [2:0] border_color = (status[43:42] == 1) ? {trdos_en, scorp_1ffd[1], page_reg[4]}
                         : (status[43:42] == 2) ? {trdos_en, dbg_dos_r0, dbg_bank_chg}
                         : border_reg;
@@ -1173,7 +1174,15 @@ reg         fdd_side;
 reg         fdd_reset;
 wire        fdd_intrq;
 wire        fdd_drq;
-wire        fdd_sel  = trdos_en & addr[2] & addr[1];
+// Fuse's beta_ports[] decode the whole low byte (mask 0x00ff) against 0x1F,
+// 0x3F, 0x5F, 0x7F and 0xFF - every Beta port has bit 0 SET. Ours checked only
+// bits 2 and 1, so port #FE (the ULA border port, which differs from the Beta
+// system port #FF only in bit 0) was decoded as a system-port write and
+// clobbered {fdd_side, fdd_reset, fdd_drive1}. The Shadow Monitor does
+// OUT (#FE),#04, which set fdd_side = ~cpu_dout[4] = 1, so TR-DOS then looked
+// for the directory on side 1. Scoped to Scorpion so machines 0-4 keep their
+// existing behaviour.
+wire        fdd_sel  = trdos_en & addr[2] & addr[1] & (~scorp | addr[0]);
 reg         fdd_ro;
 wire  [7:0] wdc_dout = (addr[7] & ~plusd_en) ? {fdd_intrq, fdd_drq, 6'h3F} : wd_dout;
 

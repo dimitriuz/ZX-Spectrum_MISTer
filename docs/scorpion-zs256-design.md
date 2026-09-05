@@ -145,7 +145,104 @@ to the DE10-Nano, and run through:
    Pentagon 1024; on the +3 specifically, mount a .dsk, **reset, and confirm the drive
    is still ready** (this is the path the reverted `u765.sv` change broke).
 
-## 6. Known limitations / stretch goals
+## 6. Known limitation: the "128 TR-DOS" menu item
+
+Everything else on the machine works, verified on a DE10-Nano against a real
+bootable TR-DOS disk. This one menu entry does not, and the cause is understood
+but not yet fixed.
+
+### What works
+
+| | |
+|---|---|
+| Boot, 128 BASIC, 48 BASIC, Calculator | yes |
+| **48 TR-DOS** from the menu | yes - boots the disk |
+| `RANDOMIZE USR 15616` from 128 BASIC | yes - boots the disk |
+| Loading games, including Scorpion 256K titles | yes |
+| Shadow Service Monitor (F11), all menus | yes |
+| Monitor > Disk utility > Test disk | yes - full surface, 2560 sectors, 0 bad |
+| All 16 RAM banks incl. extended `#1FFD[4]` | yes |
+| `.z80` snapshots (hw=10, ARCH_SCORP) | yes |
+
+Note that `Monitor > Disk utility > Catalogue` returns `R/W error #9`. That is
+**not** a core bug - Fuse 1.9 does the same on the same disk, which then loads
+normally.
+
+### The failure
+
+Selecting "128 TR-DOS" hangs (ROM 2.94 resets the machine instead). The same
+ROM and disk work in Fuse 1.7 and Fuse 1.9.
+
+### What was measured on hardware
+
+Entry is correct. An in-core trace capture (see the debug port below) recorded
+the first `#3Dxx` M1 fetch at **`#3D30` with `#7FFD=0x10` and `#1FFD=0x10`** -
+exactly the monitor's RAM gateway at `#E358`, which does
+`#7FFD<-#10 / #1FFD<-#10 / jp #3D30`. The Beta trap arms correctly.
+
+The fault is what happens next. Two sticky latches, displayed on the border,
+both fire during the attempt:
+
+- `#7FFD` bit 4 is **cleared** while TR-DOS is paged in
+- the `#C000` window is **repaged** while TR-DOS is paged in
+
+TR-DOS 5.03 does this itself: its 256K RAM detector writes `#7FFD` from eight
+sites in page 3, including `#2B68` (`(#5C01) OR #05`) and `#2B7A` (`#00`), and
+`#7FFD=0x07` was captured on hardware. Meanwhile the monitor keeps everything
+it needs to return - `SP = #E2B5`, the `#E34C` return address, the decrypted
+gateway blob at `#E2DB-#E391`, and the `#DE15/#DE17` print pointers TR-DOS
+writes through - in that same `#C000` window, bank 8. When TR-DOS repages it,
+the return path is gone.
+
+This explains the whole pattern:
+
+- **Test disk works** - the monitor drives the WD1793 directly, no TR-DOS call
+- **48 TR-DOS works** - it enters with `#7FFD=#30`; bit 5 sets the paging lock,
+  so every one of TR-DOS's `#7FFD` writes is a silent no-op
+- **`USR 15616` works** - same, via `#30`
+- **128 TR-DOS fails** - it enters with `#7FFD=#10`, unlocked, so they all land
+
+### What has been ruled out
+
+- Not the ROM build. Fails identically with our v2.94 pages and with Fuse's own
+  256s-0..3 pages (which differ in pages 2 and 3).
+- Not the disk. The same image boots in Fuse and via 48 TR-DOS here.
+- Not the FDC or disk timing. Full-surface verify passes with zero errors.
+- Not the Beta trap gate, the ROM page priority, the TR-DOS ROMCS override, the
+  unattached-port value, or the Beta port decode - all of these were wrong in
+  various ways, all have been fixed against Fuse/MAME, and none of them fixes
+  this.
+
+### The open question
+
+Fuse survives the same `#7FFD` writes with the same page arithmetic
+(`page = {1FFD[4], 7FFD[2:0]}`, identical to ours). Why the repaged `#C000`
+window breaks the return path here and not there is the one thing left to
+establish, and it needs a Fuse trace of the bank across that call rather than
+another guess at the RTL.
+
+### Workaround
+
+Use **48 TR-DOS** from the menu, or `RANDOMIZE USR 15616` from 128 BASIC. Both
+reach TR-DOS and load games, including 256K Scorpion titles.
+
+## 7. Debug facilities
+
+Two OSD-gated aids, both off by default and inert unless selected:
+
+- **Debug Border** (`status[43:42]`): 1 = ROM page
+  `{trdos_en, #1FFD[1], #7FFD[4]}`, 2 = repaging trace
+  `{trdos_en, #7FFD bit4 cleared while TR-DOS, #C000 bank moved while TR-DOS}`.
+- **Debug Port** (`status[44]`): 16 read-only registers at `#7AF0-#7AFF` - the
+  machine state captured at the first `#3Dxx` fetch, `#3Dxx`/`trdos_en` counts,
+  FDC activity, and an `0xA5` sentinel at `#7AFF` so a dead port cannot be
+  mistaken for data. `#7AFx` is Turbo+/GMX territory the base ZS-256 ROM never
+  touches (confirmed by disassembling pages 0 and 2).
+
+`tools/make_dbgread_z80.py` and `tools/make_bank_test_z80.py` build `.z80`
+snapshots that read these back and display them as bit grids.
+
+## 8. Other known limitations / stretch goals
 
 - **#FE selective decode** (A4,A3,A1,A0 per bootcamp notes) not modeled — standard ULA-48 #FE used. Needs Turbo+ schematics/GAL netlist for exactness.
 - **Keyboard matrix**: PS2 keys map via the existing membrane scan-code table; the Scorpion's 58-key full-size matrix is not emulated (no functional loss for most software; key *positions* differ from a real Scorpion keyboard).

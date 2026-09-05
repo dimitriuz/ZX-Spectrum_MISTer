@@ -46,6 +46,7 @@ localparam ARCH_ZX3   = 5'b100_01; // ZX 128 +3
 localparam ARCH_P48   = 5'b011_10; // Pentagon 48
 localparam ARCH_P128  = 5'b000_10; // Pentagon 128
 localparam ARCH_P1024 = 5'b001_10; // Pentagon 1024
+localparam ARCH_SCORP = 5'b101_00; // Scorpion ZS-256
 
 localparam CONF_BDI   = "(BDI)";
 localparam CONF_PLUSD = "(+D) ";
@@ -92,7 +93,7 @@ localparam CONF_STR = {
 	"D3P2OP,Snow Bug,Disabled,Enabled;",
 	"P2-;",
 	"P2O[9:8],Video Timings,ULA-48,ULA-128,Pentagon;",
-	"P2O[12:10],Memory,Spectrum 128K/+2,Pentagon 1024K,Profi 1024K,Spectrum 48K,Spectrum +2A/+3;",
+	"P2O[12:10],Memory,Spectrum 128K/+2,Pentagon 1024K,Profi 1024K,Spectrum 48K,Spectrum +2A/+3,Scorpion ZS-256;",
 	"P2-;",
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
@@ -367,6 +368,8 @@ T80pa cpu
 wire [7:0] cpu_din =  
 		~nMREQ   ? (tape_dout_en ? tape_dout : ram_dout)      :
 		~io_rd   ? port_ff                                    :
+		// non-Turbo base model: #1FFD reads return #FF, #7FFD is write-only
+		(scorp & (addr[14:0] == 15'h1FFD)) ? 8'hFF            :
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
 		mmc_sel  ? mmc_dout                                   :
@@ -376,6 +379,13 @@ wire [7:0] cpu_din =
 		psg_rd   ? psg_dout                                   :
 		ulap_sel ? ulap_dout                                  :
 		~addr[0] ? {1'b1, ula_tape_in, 1'b1, kbd_dout}        :
+		// Fuse gives the Scorpion machine->unattached_port =
+		// spectrum_unattached_port_none, i.e. an unattached port reads #FF rather
+		// than the floating bus, and beta_sr_read() likewise returns #FF while the
+		// interface is inactive. Returning floating-bus screen bytes here makes the
+		// Shadow Monitor's FDC status polling see plausible-but-wrong values and
+		// spin, instead of reading "not ready" and failing cleanly.
+		scorp    ? 8'hFF                                      :
 					  port_ff;
 
 reg init_reset = 1;
@@ -386,13 +396,13 @@ always @(posedge clk_sys) begin
 end
 
 reg NMI;
+reg old_F11;
+wire mni_pulse = ~old_F11 & Fn[11] & (mod[2:1] == 0); // F11 rising edge, mod 0/1 -> MNI
 always @(posedge clk_sys) begin
-	reg old_F11;
-
 	old_F11 <= Fn[11];
 
 	if(reset | ~Fn[11] | (m1 & (addr == 'h66))) NMI <= 0;
-	else if(~old_F11 & Fn[11] & (mod[2:1] == 0)) NMI <= 1;
+	else if(mni_pulse) NMI <= 1;
 end
 
 
@@ -416,10 +426,11 @@ always_comb begin
 		'b01XX_X_XX: ram_addr = load_addr;
 		'b001X_X_XX: ram_addr = tape_addr;
 		'b0001_X_XX: ram_addr = { 4'b1000, mmc_ram_bank,                                     addr[12:0]};
-		'b0000_0_00: ram_addr = { 3'b101,  page_rom,                                         addr[13:0]}; //ROM
-		'b0000_0_01: ram_addr = { 4'b0000, 3'd5,                                             addr[13:0]}; //Non-special page modes
-		'b0000_0_10: ram_addr = { 4'b0000, 3'd2,                                             addr[13:0]};
-		'b0000_0_11: ram_addr = { 1'b0,    page_ram,                                         addr[13:0]};
+		'b0000_0_00: ram_addr = scorp ? (scorp_1ffd[0] ? { 1'b0, 4'd0, addr[13:0] } : { 3'b110, page_rom, addr[13:0] })
+		                              : { 3'b101, page_rom, addr[13:0] }; //ROM (scorp: RAM bank 0 / Scorpion ROM window)
+		'b0000_0_01: ram_addr = scorp ? { 1'b0, 4'd5, addr[13:0] } : { 4'b0000, 3'd5, addr[13:0] }; // #4000: bank 5 fixed (screen)
+		'b0000_0_10: ram_addr = scorp ? { 1'b0, 4'd2, addr[13:0] } : { 4'b0000, 3'd2, addr[13:0] }; // #8000: bank 2 fixed
+		'b0000_0_11: ram_addr = { 1'b0, (scorp ? {1'b0, scorp_page} : page_ram), addr[13:0]};          // #C000: paged bank
 		'b0000_1_00: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b00, addr[13:0]}; //Special page modes
 		'b0000_1_01: ram_addr = { 4'b0000, |page_reg_plus3[2:1], &page_reg_plus3[2:1], 1'b1, addr[13:0]};
 		'b0000_1_10: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b10, addr[13:0]};
@@ -443,7 +454,7 @@ always_comb begin
 		'b1XX: ram_we = snap_wr;
 		'b01X: ram_we = ioctl_wr;
 		'b001: ram_we = 0;
-		'b000: ram_we = (mmc_ram_en | page_special | addr[15] | addr[14] | ((plusd_mem | mf128_mem) & addr[13])) & ~nMREQ & ~nWR;
+		'b000: ram_we = (mmc_ram_en | page_special | addr[15] | addr[14] | (~scorp & (plusd_mem | mf128_mem) & addr[13]) | (scorp & scorp_1ffd[0] & ~addr[14] & ~addr[15])) & ~nMREQ & ~nWR;
 	endcase
 end
 
@@ -477,12 +488,15 @@ reg        zx48;
 reg        p1024;
 reg        pf1024;
 reg        plus3;
+reg        scorp;
 reg        page_scr_copy;
+reg  [7:0] scorp_1ffd;
+reg        mni_pending = 0; // F11 MNI latch, applied in the paging block (single-driver style)
 reg        shadow_rom;
 reg  [7:0] page_reg;
 reg  [7:0] page_reg_plus3;
 reg  [7:0] page_reg_p1024;
-wire       page_disable = zx48 | (~p1024 & page_reg[5]) | (p1024 & page_reg_p1024[2] & page_reg[5]);
+wire       page_disable = zx48 | (~p1024 & ~scorp & page_reg[5]) | (p1024 & page_reg_p1024[2] & page_reg[5]);
 wire       page_scr     = page_reg[3];
 wire [5:0] page_ram     = {page_128k, page_reg[2:0]};
 wire       page_write   = ~addr[15] & ~addr[1] & (addr[14] | ~plus3) & ~page_disable; //7ffd
@@ -490,21 +504,46 @@ wire       page_write_plus3 = ~addr[1] & addr[12] & ~addr[13] & ~addr[14] & ~add
 wire       page_special = page_reg_plus3[0];
 wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
+wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
+wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
+// Fuse z80_ops.c arms the Beta ROMCS on a #3Dxx fetch when, for a 128-type
+// machine, machine_current->ram.current_rom != 0 - and scorpion_memory_map sets
+// current_rom = (1FFD[1] ? 2 : 7FFD[4]). So the trap arms from ROM1 *or* ROM2
+// (the Shadow Monitor), never from ROM0. Arming from ROM0 would break BASIC 128,
+// which has genuine subroutines of its own at #3D9D-#3DE9.
+wire       scorp_cur_rom = scorp_1ffd[1] | page_reg[4];   // Fuse: ram.current_rom != 0
+wire       scorp_rom1    = ~scorp_1ffd[0] & scorp_cur_rom; // ROM1 or ROM2 at #0000
+wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further #7FFD writes until reset (#1FFD stays writable)
 reg  [2:0] page_128k;
 
 reg  [3:0] page_rom;
 wire       active_48_rom = zx48 | (page_reg[4] & ~plus3) | (plus3 & page_reg[4] & page_reg_plus3[2] & ~page_special);
 
 always_comb begin
-	casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
-		'b1XXXXX: page_rom <=   4'b0011; //esxdos
-		'b01XXXX: page_rom <=   4'b0100; //shadow
-		'b001XXX: page_rom <=   4'b0101; //trdos
-		'b0001XX: page_rom <=   4'b1100; //plusd
-		'b00001X: page_rom <= { 2'b11, plus3, ~plus3 }; //MF128/+3
-		'b000001: page_rom <= { 2'b10, page_reg_plus3[2], page_reg[4] }; //+3
-		'b000000: page_rom <= { zx48, 2'b11, zx48 | page_reg[4] }; //up to +2
-	endcase
+	if(scorp) begin
+		// Priority, both halves confirmed on hardware:
+		//   #1FFD[1] outranks everything - MAME scorpion_update_memory() reads
+		//     BIT(port_1ffd,1) ? ROM_PAGE_SYS : ... . Putting TR-DOS above it makes
+		//     the Shadow Monitor unreachable, since trdos_en is set during boot.
+		//   Below that the Beta ROMCS wins: once the #3Dxx trap has fired the TR-DOS
+		//     ROM is selected regardless of the machine's own ROM-select bits, which
+		//     is what Fuse gets by calling memory_romcs_map() last. Deriving the page
+		//     as {trdos_en, page_reg[4]} instead would let any #7FFD write with bit 4
+		//     clear page TR-DOS out from under itself.
+		if(scorp_1ffd[1]) page_rom <= 4'd2;                        // ROM2 Shadow Service Monitor
+		else if(trdos_en) page_rom <= 4'd3;                        // TR-DOS ROMCS
+		else              page_rom <= {3'b000, page_reg[4]};       // 0=BASIC128 1=48K
+	end else begin
+		casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
+			'b1XXXXX: page_rom <=   4'b0011; //esxdos
+			'b01XXXX: page_rom <=   4'b0100; //shadow
+			'b001XXX: page_rom <=   4'b0101; //trdos
+			'b0001XX: page_rom <=   4'b1100; //plusd
+			'b00001X: page_rom <= { 2'b11, plus3, ~plus3 }; //MF128/+3
+			'b000001: page_rom <= { 2'b10, page_reg_plus3[2], page_reg[4] }; //+3
+			'b000000: page_rom <= { zx48, 2'b11, zx48 | page_reg[4] }; //up to +2
+		endcase
+	end
 end
 
 always @(posedge clk_sys) begin
@@ -523,10 +562,13 @@ always @(posedge clk_sys) begin
 		page_reg_plus3 <= 0; 
 		page_reg_p1024 <= 0;
 		page_128k   <= 0;
+		scorp_1ffd  <= 0;
+		mni_pending <= 0;
+		scorp       <= (status[12:10] == 5);
 		page_reg[4] <= Fn[10];
 		page_reg_plus3[2] <= Fn[10];
 		shadow_rom <= shdw_reset & ~plusd_en;
-		if(Fn[10] && (rmod == 1)) begin
+		if(Fn[10] && (rmod == 1) && (status[12:10] != 5)) begin
 			p1024  <= 0;
 			pf1024 <= 0;
 			zx48   <= ~plus3;
@@ -538,15 +580,18 @@ always @(posedge clk_sys) begin
 		end
 	end else begin
 		if(snap_REGSet) begin
-			if((snap_hw == ARCH_ZX128) || (snap_hw == ARCH_P128) || (snap_hw == ARCH_ZX3)) page_reg <= snap_7ffd;
+			if((snap_hw == ARCH_ZX128) || (snap_hw == ARCH_P128) || (snap_hw == ARCH_ZX3) || (snap_hw == ARCH_SCORP)) page_reg <= snap_7ffd;
 			if(snap_hw == ARCH_ZX3) page_reg_plus3 <= snap_1ffd;
+			if(snap_hw == ARCH_SCORP) scorp_1ffd <= snap_1ffd;
 		end
 		else begin
 			if(m1 && ~old_m1 && addr[15:14]) shadow_rom <= 0;
 			if(m1 && ~old_m1 && ~plusd_en && ~mod[0] && (addr == 'h66) && ~plus3) shadow_rom <= 1; 
 
 			if(io_wr & ~old_wr) begin
-				if(page_write) begin
+				if(scorp_1ffd_wr) begin
+					scorp_1ffd <= cpu_dout;      //#1FFD is not covered by the #7FFD lock
+				end else if(page_write & ~scorp_lock) begin
 					page_reg  <= cpu_dout;
 					if(p1024 & ~page_reg_p1024[2]) page_128k[2:0] <= { cpu_dout[5], cpu_dout[7:6] };
 					if(~plusd_mem) page_scr_copy <= cpu_dout[3];
@@ -557,12 +602,17 @@ always @(posedge clk_sys) begin
 				if(p1024 & page_p1024) page_reg_p1024 <= cpu_dout;
 			end
 		end
+		if(mni_pending) begin
+			scorp_1ffd <= {scorp_1ffd[7:2], 1'b1, scorp_1ffd[0]}; // MNI sets bit 1 only (hardware latch, not a port write)
+			mni_pending <= 0;
+		end
+		if(mni_pulse & scorp) mni_pending <= 1; // single driver: reset above clears, this sets
 	end
 end
 
 
 ////////////////////  ULA PORT  ///////////////////
-reg [2:0] border_color;
+reg [2:0] border_color = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
 reg       ear_out;
 reg       mic_out;
 
@@ -871,7 +921,20 @@ keyboard kbd( .* );
 wire  [7:0] mouse_data;
 mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(), .dout(mouse_data), .btn_swap(status[35]));
 
-wire       kemp_sel = addr[5:0] == 6'h1F;
+// The Kempston decode is six bits wide - it answers #1F, #5F, #9F and #DF - and
+// it is unconditional, sitting below fdc_sel in the cpu_din mux, so with TR-DOS
+// paged out it also answers two of the Beta interface's own ports, #1F and #5F,
+// with the empty joystick #00 rather than the #FF an unattached port reads.
+//
+// That matters on the Scorpion because its Shadow Service Monitor polls the
+// WD1793 status through #xx1F *after* paging TR-DOS out, and spins until the
+// value is non-zero (ROM2 #0234: ld hl,#E005 / in a,(#1F) / and h / jr z,#0237).
+// Handing the Beta range back unconditionally is wrong the other way, since
+// Kempston is active high: #FF reads as every direction plus fire held down, and
+// the TR-DOS file browser polls #0C1F constantly. #1FFD[1] separates the two -
+// only the monitor runs with its own ROM2 paged in.
+wire       beta_port = &addr[4:0] & (~addr[7] | &addr[7:5]); // #1F #3F #5F #7F #FF
+wire       kemp_sel = (addr[5:0] == 6'h1F) & ~(scorp & beta_port & scorp_1ffd[1]);
 reg  [7:0] kemp_dout;
 reg        kemp_mode = 0;
 always @(posedge clk_sys) begin
@@ -943,7 +1006,7 @@ always @(posedge clk_sys) begin
 	
 	if(reset) begin
 		vsd_sel  <= (vhd_en && !status[33:32]);
-		mmc_mode <= (vhd_en || status[33:32]) ? (status[31:30] ? status[31:30] : 2'b11) : 2'b00;
+		mmc_mode <= ((vhd_en || status[33:32]) && (status[12:10] != 5)) ? (status[31:30] ? status[31:30] : 2'b11) : 2'b00; //no DivMMC on Scorpion
 	end
 end
 
@@ -1040,7 +1103,15 @@ reg         fdd_side;
 reg         fdd_reset;
 wire        fdd_intrq;
 wire        fdd_drq;
-wire        fdd_sel  = trdos_en & addr[2] & addr[1];
+// Fuse's beta_ports[] decode the whole low byte (mask 0x00ff) against 0x1F,
+// 0x3F, 0x5F, 0x7F and 0xFF - every Beta port has bit 0 SET. Ours checked only
+// bits 2 and 1, so port #FE (the ULA border port, which differs from the Beta
+// system port #FF only in bit 0) was decoded as a system-port write and
+// clobbered {fdd_side, fdd_reset, fdd_drive1}. The Shadow Monitor does
+// OUT (#FE),#04, which set fdd_side = ~cpu_dout[4] = 1, so TR-DOS then looked
+// for the directory on side 1. Scoped to Scorpion so machines 0-4 keep their
+// existing behaviour.
+wire        fdd_sel  = trdos_en & addr[2] & addr[1] & (~scorp | addr[0]);
 reg         fdd_ro;
 wire  [7:0] wdc_dout = (addr[7] & ~plusd_en) ? {fdd_intrq, fdd_drq, 6'h3F} : wd_dout;
 
@@ -1101,10 +1172,21 @@ always @(posedge clk_sys) begin
 		plusd_mem <= 0;
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
-			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & active_48_rom & ~&mmc_mode) trdos_en <= 1;
+			// Fuse z80_ops.c gates *both* halves of the Beta trap on
+			// current_rom != 0, page-in and page-out alike, so while ROM0 is selected
+			// the interface simply holds its state rather than paging out above #4000.
+			// Keep the reduction OR explicit: `addr[15:14] & <1 bit>` would extend the
+			// 1-bit operand by zero-filling and so test addr[14] alone, which stops
+			// paging TR-DOS out anywhere in #8000-#BFFF - and #8018 is exactly where
+			// the TR-DOS boot loader lands, so the file browser would then run with
+			// the TR-DOS ROM still over #0000-#3FFF.
+			if((|addr[15:14]) & (~scorp | scorp_cur_rom)) trdos_en <= 0;
+				else if((addr[13:8] == 'h3D) & (scorp ? scorp_rom1 : active_48_rom) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
+		//MNI (F11) enables the Beta interface, as MAME's do_nmi() does via
+		//update_io(true) - the Service Monitor needs the WD1793 reachable.
+		if(mni_pending & scorp) trdos_en <= 1;
 	end
 end
 
@@ -1292,7 +1374,7 @@ wire   [2:0] snap_border;
 wire   [7:0] snap_1ffd;
 wire   [7:0] snap_7ffd;
 
-snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128) snap_loader
+snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128, ARCH_SCORP) snap_loader
 (
 	.clk_sys(clk_sys),
 

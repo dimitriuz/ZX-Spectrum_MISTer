@@ -500,6 +500,7 @@ wire       motor_plus3 = page_reg_plus3[3];
 wire       page_p1024 = addr[15] & addr[14] & addr[13] & ~addr[12] & ~addr[3]; //eff7
 wire [3:0] scorp_page    = {scorp_1ffd[4], page_reg[2:0]};
 wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]; // #1FFD
+wire       scorp_rom1    = ~scorp_1ffd[0] & ~scorp_1ffd[1] & page_reg[4]; // ROM1 (48K BASIC) actually paged at #0000
 wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further #7FFD writes until reset (#1FFD stays writable)
 reg  [2:0] page_128k;
 
@@ -1157,7 +1158,7 @@ always @(posedge clk_sys) begin
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
 			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & active_48_rom & ~&mmc_mode) trdos_en <= 1;
+				else if((addr[13:8] == 'h3D) & (scorp ? scorp_rom1 : active_48_rom) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
 		//MNI (F11) enables the Beta interface, as MAME's do_nmi() does via

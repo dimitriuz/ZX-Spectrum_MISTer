@@ -11,7 +11,10 @@ building with Quartus and running on a DE10-Nano — see "Verification path" bel
 ## Workflow rules
 
 - **Do all calculations by scripts** (python3, awk, xxd — anything that runs): hex decoding, bit-field math, address/SDRAM mapping, ROM scans/disassembly, checksums. Never compute these in your head; write a script, run it, trust its output.
-- **Do not use subagents** for the edit/build loop — it is tight and sequential, and delegation adds overhead without useful parallelism. (A one-shot review pass over a finished diff is fine.)
+- **Subagents:** the original "no subagents" rule applies to the local LLM setup only, not to
+  agents that support them. Delegation is fine and useful for independent research (ROM
+  disassembly, reference cross-checks, reviewing a finished diff). Keep the edit/build/flash
+  loop itself in the main session — it is tight and sequential.
 
 ## Repo layout
 

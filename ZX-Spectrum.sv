@@ -508,9 +508,9 @@ wire       active_48_rom = zx48 | (page_reg[4] & ~plus3) | (plus3 & page_reg[4] 
 
 always_comb begin
 	if(scorp) begin
-		if(scorp_1ffd[0])      page_rom <= 4'd0;   // #0000 shows RAM bank 0 instead (decode override)
-		else if(scorp_1ffd[1]) page_rom <= 4'd2;   // ROM2 Shadow Service Monitor
-		else                   page_rom <= page_reg[4] ? 4'd1 : 4'd0; // ROM1 48K BASIC / ROM0 Scorpion BASIC 128
+		// MAME scorpion_update_memory(): 1FFD[1] ? SYS : ((dos<<1) | rom1)
+		if(scorp_1ffd[1]) page_rom <= 4'd2;                        // ROM2 Shadow Service Monitor (outranks TR-DOS)
+		else              page_rom <= {2'b00, trdos_en, page_reg[4]}; // 0=BASIC128 1=48K 2/3=TR-DOS
 	end else begin
 		casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
 			'b1XXXXX: page_rom <=   4'b0011; //esxdos
@@ -522,7 +522,6 @@ always_comb begin
 			'b000000: page_rom <= { zx48, 2'b11, zx48 | page_reg[4] }; //up to +2
 		endcase
 	end
-	if(scorp & trdos_en) page_rom <= 4'd3;   // ROM3 TR-DOS when disk active
 end
 
 always @(posedge clk_sys) begin
@@ -594,8 +593,11 @@ end
 reg [2:0] border_reg = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
 // Debug view (status[42]): paint the border with the ROM page currently at #0000,
 // so the paging state is visible even while the CPU is hung.
-//   black=ROM0(BASIC128)  blue=ROM1(48K)  red=ROM2(Monitor)  magenta=ROM3(TR-DOS)
-wire [2:0] border_color = status[42] ? page_rom[2:0] : border_reg;
+//   bit2 = trdos_en, bit1 = #1FFD[1] (monitor), bit0 = #7FFD[4] (48K ROM)
+//   black 0 =BASIC128     blue 1 =48K ROM      red    2 =monitor  magenta 3 =monitor+48K
+//   green 4 =TRDOS armed  cyan 5 =TRDOS+48K    yellow 6 =TRDOS+mon  white 7 =all
+//   ANY of green/cyan/yellow/white means the #3Dxx trap fired.
+wire [2:0] border_color = status[42] ? {trdos_en, scorp_1ffd[1], page_reg[4]} : border_reg;
 reg       ear_out;
 reg       mic_out;
 
@@ -1135,7 +1137,7 @@ always @(posedge clk_sys) begin
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
 			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & (active_48_rom | (scorp & ~scorp_1ffd[0])) & ~&mmc_mode) trdos_en <= 1;
+				else if((addr[13:8] == 'h3D) & active_48_rom & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
 	end

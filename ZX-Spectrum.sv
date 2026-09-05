@@ -97,6 +97,8 @@ localparam CONF_STR = {
 	"P2-;",
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
+	"P2-;",
+	"P2O[42],Debug Border,Off,ROM Page;",
 
 	"-;",
 	"O[37:36],Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
@@ -589,19 +591,23 @@ end
 
 
 ////////////////////  ULA PORT  ///////////////////
-reg [2:0] border_color = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
+reg [2:0] border_reg = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
+// Debug view (status[42]): paint the border with the ROM page currently at #0000,
+// so the paging state is visible even while the CPU is hung.
+//   black=ROM0(BASIC128)  blue=ROM1(48K)  red=ROM2(Monitor)  magenta=ROM3(TR-DOS)
+wire [2:0] border_color = status[42] ? page_rom[2:0] : border_reg;
 reg       ear_out;
 reg       mic_out;
 
 always @(posedge clk_sys) begin
 	if(reset) {ear_out, mic_out} <= 2'b00;
 	else if(io_wr & ~addr[0]) begin
-		border_color <= cpu_dout[2:0];
+		border_reg <= cpu_dout[2:0];
 		ear_out <= cpu_dout[4]; 
 		mic_out <= cpu_dout[3];
 	end
 	
-	if(snap_REGSet) border_color <= snap_border;
+	if(snap_REGSet) border_reg <= snap_border;
 end
 
 
@@ -1129,7 +1135,7 @@ always @(posedge clk_sys) begin
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
 			if(addr[15:14]) trdos_en <= 0;
-				else if((addr[13:8] == 'h3D) & (active_48_rom | (scorp & ~scorp_1ffd[0] & ~scorp_1ffd[1])) & ~&mmc_mode) trdos_en <= 1;
+				else if((addr[13:8] == 'h3D) & (active_48_rom | (scorp & ~scorp_1ffd[0])) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
 	end

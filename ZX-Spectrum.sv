@@ -522,8 +522,15 @@ always_comb begin
 		// the page as {trdos_en, page_reg[4]} pages TR-DOS out from under itself.
 		// The 48 TR-DOS route only survives that because it enters with #7FFD=#30,
 		// where bit 5 locks paging and the write is a no-op.
-		if(trdos_en)      page_rom <= 4'd3;                        // TR-DOS ROMCS wins
-		else if(scorp_1ffd[1]) page_rom <= 4'd2;                   // ROM2 Shadow Service Monitor
+		// Priority, both halves confirmed on hardware:
+		//   #1FFD[1] outranks everything (MAME: BIT(port_1ffd,1) ? ROM_PAGE_SYS : ...).
+		//     Putting TR-DOS above it made the Shadow Monitor unreachable, since
+		//     trdos_en is set during normal boot.
+		//   Below that the Beta ROMCS forces TR-DOS: deriving the page as
+		//     {trdos_en, page_reg[4]} let TR-DOS 5.03's bank scan (#7FFD=#07,
+		//     bit 4 clear) page TR-DOS out from under itself.
+		if(scorp_1ffd[1]) page_rom <= 4'd2;                        // ROM2 Shadow Service Monitor
+		else if(trdos_en) page_rom <= 4'd3;                        // TR-DOS ROMCS
 		else              page_rom <= {3'b000, page_reg[4]};       // 0=BASIC128 1=48K
 	end else begin
 		casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})

@@ -98,7 +98,7 @@ localparam CONF_STR = {
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
 	"P2-;",
-	"P2O[42],Debug Border,Off,ROM Page;",
+	"P2O[43:42],Debug Border,Off,ROM Page,Trap Trace;",
 
 	"-;",
 	"O[37:36],Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
@@ -593,11 +593,31 @@ end
 reg [2:0] border_reg = 3'b000;   // explicit power-up value: Scorpion v2.94 never writes #FF during boot, so the border latch is read before it is ever written
 // Debug view (status[42]): paint the border with the ROM page currently at #0000,
 // so the paging state is visible even while the CPU is hung.
-//   bit2 = trdos_en, bit1 = #1FFD[1] (monitor), bit0 = #7FFD[4] (48K ROM)
-//   black 0 =BASIC128     blue 1 =48K ROM      red    2 =monitor  magenta 3 =monitor+48K
-//   green 4 =TRDOS armed  cyan 5 =TRDOS+48K    yellow 6 =TRDOS+mon  white 7 =all
-//   ANY of green/cyan/yellow/white means the #3Dxx trap fired.
-wire [2:0] border_color = status[42] ? {trdos_en, scorp_1ffd[1], page_reg[4]} : border_reg;
+// Sticky trap trace: the monitor reaches TR-DOS through a routine it decrypts
+// into RAM at #E2DB (the #C000 window), which ends in "jp #3D30". If that RAM
+// is not holding data the jump never happens and no #3Dxx fetch ever occurs.
+// These latches tell those cases apart; they only clear on reset.
+reg dbg_m1_3d = 0;   // an M1 fetch in #3D00-#3DFF has happened at least once
+reg dbg_trdos = 0;   // trdos_en has been asserted at least once
+always @(posedge clk_sys) begin
+	reg old_m1_dbg;
+	old_m1_dbg <= m1;
+	if(reset) {dbg_m1_3d, dbg_trdos} <= 0;
+	else begin
+		if(m1 & ~old_m1_dbg & ~addr[15] & ~addr[14] & (addr[13:8] == 'h3D)) dbg_m1_3d <= 1;
+		if(trdos_en) dbg_trdos <= 1;
+	end
+end
+
+// status[43:42]: 0=off  1=ROM page  2=trap trace
+//  ROM page  : bit2=trdos_en bit1=#1FFD[1](monitor) bit0=#7FFD[4](48K ROM)
+//  Trap trace: bit2=trdos_en bit1=trdos ever set    bit0=#3Dxx fetch ever seen
+//     black 0 = the CPU never even reached #3Dxx  -> the RAM gateway never ran
+//     blue  1 = reached #3Dxx but trap never armed -> gate/active_48_rom problem
+//     white 7 / magenta 3 = trap did fire
+wire [2:0] border_color = (status[43:42] == 1) ? {trdos_en, scorp_1ffd[1], page_reg[4]}
+                        : (status[43:42] == 2) ? {trdos_en, dbg_trdos, dbg_m1_3d}
+                        : border_reg;
 reg       ear_out;
 reg       mic_out;
 
@@ -1140,6 +1160,9 @@ always @(posedge clk_sys) begin
 				else if((addr[13:8] == 'h3D) & active_48_rom & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end
+		//MNI (F11) enables the Beta interface, as MAME's do_nmi() does via
+		//update_io(true) - the Service Monitor needs the WD1793 reachable.
+		if(mni_pending & scorp) trdos_en <= 1;
 	end
 end
 

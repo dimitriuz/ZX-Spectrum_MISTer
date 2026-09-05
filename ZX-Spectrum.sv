@@ -637,15 +637,7 @@ end
 
 // Debug read port, OSD-gated so it does not exist unless asked for.
 // #7AF0-#7AF7 (a Turbo+/GMX port range the base ZS-256 ROM never touches).
-assign     dbg_sel  = status[44] & (addr[15:8] == 8'h7A) & (addr[7:3] == 5'b11110);
-assign     dbg_dout = (addr[2:0] == 3'd0) ? {3'd0, scorp_rom1, scorp, trdos_en, dbg_trdos, dbg_m1_3d}
-                    : (addr[2:0] == 3'd1) ? dbg_f7ffd     // #7FFD at first #3Dxx fetch
-                    : (addr[2:0] == 3'd2) ? dbg_f1ffd     // #1FFD at first #3Dxx fetch
-                    : (addr[2:0] == 3'd3) ? dbg_faddr     // low addr byte of that fetch
-                    : (addr[2:0] == 3'd4) ? dbg_n3d       // how many #3Dxx fetches
-                    : (addr[2:0] == 3'd5) ? dbg_ntr       // how many trdos_en assertions
-                    : (addr[2:0] == 3'd6) ? page_reg      // #7FFD now
-                    :                       scorp_1ffd;   // #1FFD now
+assign     dbg_sel  = status[44] & (addr[15:8] == 8'h7A) & (addr[7:4] == 4'hF);
 
 // status[43:42]: 0=off  1=ROM page  2=trap trace
 //  ROM page  : bit2=trdos_en bit1=#1FFD[1](monitor) bit0=#7FFD[4](48K ROM)
@@ -1243,6 +1235,43 @@ wd1793 #(1) wd1793
 	.buff_din(0)
 );
 
+
+// ---- debug: FDC activity capture, and the #7AF0-#7AFF register mux ----
+reg [7:0] dbg_nfdd = 0, dbg_lastff = 0, dbg_lastcmd = 0, dbg_laststat = 0, dbg_nff = 0;
+always @(posedge clk_sys) begin
+	reg old_wr_f, old_rd_f;
+	old_wr_f <= io_wr;
+	old_rd_f <= io_rd;
+	if(io_wr & ~old_wr_f & dbg_sel) {dbg_nfdd,dbg_lastff,dbg_lastcmd,dbg_laststat,dbg_nff} <= 0;
+	else begin
+		if(~old_wr_f & io_wr & fdd_sel) begin
+			if(~&dbg_nfdd) dbg_nfdd <= dbg_nfdd + 1'd1;
+			if(addr[7]) begin
+				dbg_lastff <= cpu_dout;
+				if(~&dbg_nff) dbg_nff <= dbg_nff + 1'd1;
+			end
+			else if(addr[6:5] == 2'b00) dbg_lastcmd <= cpu_dout;
+		end
+		if(~old_rd_f & io_rd & fdd_sel & ~addr[7] & (addr[6:5] == 2'b00)) dbg_laststat <= wd_dout;
+	end
+end
+
+assign dbg_dout = (addr[3:0] == 4'd0)  ? {3'd0, scorp_rom1, scorp, trdos_en, dbg_trdos, dbg_m1_3d}
+                : (addr[3:0] == 4'd1)  ? dbg_f7ffd      // #7FFD at first #3Dxx fetch
+                : (addr[3:0] == 4'd2)  ? dbg_f1ffd      // #1FFD at first #3Dxx fetch
+                : (addr[3:0] == 4'd3)  ? dbg_faddr      // low addr byte of that fetch
+                : (addr[3:0] == 4'd4)  ? dbg_n3d        // #3Dxx fetch count
+                : (addr[3:0] == 4'd5)  ? dbg_ntr        // trdos_en assertion count
+                : (addr[3:0] == 4'd6)  ? page_reg       // #7FFD now
+                : (addr[3:0] == 4'd7)  ? scorp_1ffd     // #1FFD now
+                : (addr[3:0] == 4'd8)  ? dbg_nfdd       // FDC port accesses
+                : (addr[3:0] == 4'd9)  ? dbg_lastff     // last write to #FF (drive/side/reset)
+                : (addr[3:0] == 4'd10) ? dbg_lastcmd    // last WD1793 command
+                : (addr[3:0] == 4'd11) ? dbg_laststat   // last WD1793 status read
+                : (addr[3:0] == 4'd12) ? {fdd_ready, fdd_drive1, fdd_reset, fdd_side, fdd_intrq, fdd_drq, plusd_en, trdos_en}
+                : (addr[3:0] == 4'd13) ? dbg_nff        // writes to #FF
+                : (addr[3:0] == 4'd14) ? {6'd0, img_mounted}
+                :                        8'hA5;         // sentinel - proves the port responds
 
 u765 #(20'd1800,1) u765
 (

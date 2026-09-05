@@ -3,7 +3,7 @@
 
 Enable OSD > Hardware > "Debug Port #7AF0" first, then load this snapshot.
 
-Display: 8 rows, one per register, 8 attribute cells each = bits 7..0.
+Display: 16 rows, one per register, 8 attribute cells each = bits 7..0.
 GREEN cell = bit set, RED cell = bit clear. Row meanings:
   0  flags : b4=scorp_rom1 b3=scorp b2=trdos_en b1=trdos_ever b0=reached_3Dxx
   1  #7FFD at the FIRST #3Dxx fetch
@@ -32,19 +32,20 @@ def asm():
     b(0x21); w(0x5800); b(0x36,0x38)         # ld hl,#5800 : ld (hl),#38
     b(0x11); w(0x5801); b(0x01); w(0x02FF); b(0xED,0xB0)   # clear attrs
 
-    b(0x16,0x00)                             # ld d,0        d = register index
+    b(0x16,0x00)                             # ld d,0        d = register index (0..15)
     L('rloop')
     b(0x7A)                                  # ld a,d
-    b(0xF6,0xF0)                             # or #F0        -> low byte #F0+idx
+    b(0xF6,0xF0)                             # or #F0        -> low byte #F0+idx (16 regs)
     b(0x4F)                                  # ld c,a
     b(0x06,0x7A)                             # ld b,#7A      -> BC = #7Ax
     b(0xED,0x78)                             # in a,(c)
     b(0x5F)                                  # ld e,a        e = value
 
     # HL = #5800 + d*32   (row d)
-    b(0x7A); b(0x87); b(0x87); b(0x87); b(0x87); b(0x87)    # ld a,d : a*32 (row offset)
-    b(0x6F)                                  # ld l,a
-    b(0x26,0x58)                             # ld h,#58    -> HL = #5800 + d*32
+    # HL = #5800 + d*32 ; d can now reach 15 so the product needs 16 bits
+    b(0x26,0x00); b(0x6A)                    # ld h,0 : ld l,d
+    b(0x29); b(0x29); b(0x29); b(0x29); b(0x29)   # add hl,hl x5  -> d*32
+    b(0x01); w(0x5800); b(0x09)              # ld bc,#5800 : add hl,bc  (DE holds idx/value)
     b(0x06,0x08)                             # ld b,8        8 bits
     L('bloop')
     b(0xCB,0x23)                             # sla e         MSB -> carry
@@ -56,7 +57,7 @@ def asm():
     b(0x23)                                  # inc hl
     b(0x10,0x00); fix.append((len(out)-1,'bloop','r'))      # djnz bloop
     b(0x14)                                  # inc d
-    b(0x7A); b(0xFE,0x08)                    # ld a,d : cp 8
+    b(0x7A); b(0xFE,0x10)                    # ld a,d : cp 8
     jr(0x20,'rloop')                         # jr nz,rloop
     L('stop'); jr(0x18,'stop')
 

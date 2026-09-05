@@ -99,6 +99,7 @@ localparam CONF_STR = {
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
 	"P2-;",
 	"P2O[43:42],Debug Border,Off,ROM Page,Trap Trace;",
+	"P2O[44],Debug Port #7AF0,Off,On;",
 
 	"-;",
 	"O[37:36],Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
@@ -367,9 +368,13 @@ T80pa cpu
 	.DIRSet(snap_REGSet)
 );
 
+wire       dbg_sel;   // debug read port, driven below
+wire [7:0] dbg_dout;
+
 wire [7:0] cpu_din =  
 		~nMREQ   ? (tape_dout_en ? tape_dout : ram_dout)      :
 		~io_rd   ? port_ff                                    :
+		dbg_sel  ? dbg_dout                                   :
 		(scorp & (addr[14:0] == 15'h1FFD)) ? 8'hFF                  : // non-Turbo base model: #1FFD reads return #FF (#7FFD is write-only)
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
@@ -600,15 +605,47 @@ reg [2:0] border_reg = 3'b000;   // explicit power-up value: Scorpion v2.94 neve
 // These latches tell those cases apart; they only clear on reset.
 reg dbg_m1_3d = 0;   // an M1 fetch in #3D00-#3DFF has happened at least once
 reg dbg_trdos = 0;   // trdos_en has been asserted at least once
+reg dbg_got1  = 0;
+reg [7:0] dbg_f7ffd, dbg_f1ffd, dbg_faddr;  // machine state at the FIRST #3Dxx fetch
+reg [7:0] dbg_n3d, dbg_ntr;                 // saturating counts
 always @(posedge clk_sys) begin
-	reg old_m1_dbg;
+	reg old_m1_dbg, old_tr_dbg, old_wr_dbg;
 	old_m1_dbg <= m1;
-	if(reset) {dbg_m1_3d, dbg_trdos} <= 0;
+	old_tr_dbg <= trdos_en;
+	old_wr_dbg <= io_wr;
+	if(io_wr & ~old_wr_dbg & dbg_sel) begin   // OUT to #7AF0-#7AF7 arms a fresh capture
+		{dbg_m1_3d, dbg_trdos, dbg_got1} <= 0;
+		{dbg_f7ffd, dbg_f1ffd, dbg_faddr, dbg_n3d, dbg_ntr} <= 0;
+	end
 	else begin
-		if(m1 & ~old_m1_dbg & ~addr[15] & ~addr[14] & (addr[13:8] == 'h3D)) dbg_m1_3d <= 1;
-		if(trdos_en) dbg_trdos <= 1;
+		if(m1 & ~old_m1_dbg & ~addr[15] & ~addr[14] & (addr[13:8] == 'h3D)) begin
+			dbg_m1_3d <= 1;
+			if(~&dbg_n3d) dbg_n3d <= dbg_n3d + 1'd1;
+			if(~dbg_got1) begin                 // freeze the first occurrence
+				dbg_got1  <= 1;
+				dbg_f7ffd <= page_reg;
+				dbg_f1ffd <= scorp_1ffd;
+				dbg_faddr <= addr[7:0];
+			end
+		end
+		if(trdos_en & ~old_tr_dbg) begin
+			dbg_trdos <= 1;
+			if(~&dbg_ntr) dbg_ntr <= dbg_ntr + 1'd1;
+		end
 	end
 end
+
+// Debug read port, OSD-gated so it does not exist unless asked for.
+// #7AF0-#7AF7 (a Turbo+/GMX port range the base ZS-256 ROM never touches).
+assign     dbg_sel  = status[44] & (addr[15:8] == 8'h7A) & (addr[7:3] == 5'b11110);
+assign     dbg_dout = (addr[2:0] == 3'd0) ? {3'd0, scorp_rom1, scorp, trdos_en, dbg_trdos, dbg_m1_3d}
+                    : (addr[2:0] == 3'd1) ? dbg_f7ffd     // #7FFD at first #3Dxx fetch
+                    : (addr[2:0] == 3'd2) ? dbg_f1ffd     // #1FFD at first #3Dxx fetch
+                    : (addr[2:0] == 3'd3) ? dbg_faddr     // low addr byte of that fetch
+                    : (addr[2:0] == 3'd4) ? dbg_n3d       // how many #3Dxx fetches
+                    : (addr[2:0] == 3'd5) ? dbg_ntr       // how many trdos_en assertions
+                    : (addr[2:0] == 3'd6) ? page_reg      // #7FFD now
+                    :                       scorp_1ffd;   // #1FFD now
 
 // status[43:42]: 0=off  1=ROM page  2=trap trace
 //  ROM page  : bit2=trdos_en bit1=#1FFD[1](monitor) bit0=#7FFD[4](48K ROM)

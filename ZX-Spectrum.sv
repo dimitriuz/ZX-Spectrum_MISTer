@@ -515,8 +515,16 @@ wire       active_48_rom = zx48 | (page_reg[4] & ~plus3) | (plus3 & page_reg[4] 
 always_comb begin
 	if(scorp) begin
 		// MAME scorpion_update_memory(): 1FFD[1] ? SYS : ((dos<<1) | rom1)
-		if(scorp_1ffd[1]) page_rom <= 4'd2;                        // ROM2 Shadow Service Monitor (outranks TR-DOS)
-		else              page_rom <= {2'b00, trdos_en, page_reg[4]}; // 0=BASIC128 1=48K 2/3=TR-DOS
+		// The Beta ROMCS is a hardware override: once the #3Dxx trap has fired, the
+		// TR-DOS ROM is selected regardless of the machine's own ROM-select bits.
+		// TR-DOS 5.03's 256K RAM detector writes #7FFD=#05 at page3 #2B68 (bit 4
+		// CLEAR, because page3[#03B5]=#ED != #F3 leaves (#5C01)=#00), so deriving
+		// the page as {trdos_en, page_reg[4]} pages TR-DOS out from under itself.
+		// The 48 TR-DOS route only survives that because it enters with #7FFD=#30,
+		// where bit 5 locks paging and the write is a no-op.
+		if(trdos_en)      page_rom <= 4'd3;                        // TR-DOS ROMCS wins
+		else if(scorp_1ffd[1]) page_rom <= 4'd2;                   // ROM2 Shadow Service Monitor
+		else              page_rom <= {3'b000, page_reg[4]};       // 0=BASIC128 1=48K
 	end else begin
 		casex({mmc_rom_en, shadow_rom, trdos_en, plusd_mem, mf128_mem, plus3})
 			'b1XXXXX: page_rom <=   4'b0011; //esxdos
@@ -606,6 +614,11 @@ reg [2:0] border_reg = 3'b000;   // explicit power-up value: Scorpion v2.94 neve
 reg dbg_m1_3d = 0;   // an M1 fetch in #3D00-#3DFF has happened at least once
 reg dbg_trdos = 0;   // trdos_en has been asserted at least once
 reg dbg_got1  = 0;
+// The two ways page_rom can stop being TR-DOS while the trap is still active:
+//   dbg_dos_r0  : trdos_en high while #7FFD bit4 is clear -> page_rom = 2 (monitor)
+//   dbg_dos_sys : trdos_en high while #1FFD bit1 is set   -> page_rom forced to 2
+reg dbg_dos_r0 = 0, dbg_dos_sys = 0;
+reg [7:0] dbg_f7ffd_lost = 0;   // #7FFD the first time that happened
 reg [7:0] dbg_f7ffd, dbg_f1ffd, dbg_faddr;  // machine state at the FIRST #3Dxx fetch
 reg [7:0] dbg_n3d, dbg_ntr;                 // saturating counts
 always @(posedge clk_sys) begin
@@ -615,7 +628,8 @@ always @(posedge clk_sys) begin
 	old_wr_dbg <= io_wr;
 	if(io_wr & ~old_wr_dbg & dbg_sel) begin   // OUT to #7AF0-#7AF7 arms a fresh capture
 		{dbg_m1_3d, dbg_trdos, dbg_got1} <= 0;
-		{dbg_f7ffd, dbg_f1ffd, dbg_faddr, dbg_n3d, dbg_ntr} <= 0;
+		{dbg_dos_r0, dbg_dos_sys} <= 0;
+		{dbg_f7ffd, dbg_f1ffd, dbg_faddr, dbg_n3d, dbg_ntr, dbg_f7ffd_lost} <= 0;
 	end
 	else begin
 		if(m1 & ~old_m1_dbg & ~addr[15] & ~addr[14] & (addr[13:8] == 'h3D)) begin
@@ -632,6 +646,11 @@ always @(posedge clk_sys) begin
 			dbg_trdos <= 1;
 			if(~&dbg_ntr) dbg_ntr <= dbg_ntr + 1'd1;
 		end
+		if(trdos_en & ~page_reg[4]) begin
+			if(~dbg_dos_r0) dbg_f7ffd_lost <= page_reg;
+			dbg_dos_r0 <= 1;
+		end
+		if(trdos_en & scorp_1ffd[1]) dbg_dos_sys <= 1;
 	end
 end
 
@@ -1256,7 +1275,7 @@ always @(posedge clk_sys) begin
 	end
 end
 
-assign dbg_dout = (addr[3:0] == 4'd0)  ? {3'd0, scorp_rom1, scorp, trdos_en, dbg_trdos, dbg_m1_3d}
+assign dbg_dout = (addr[3:0] == 4'd0)  ? {dbg_dos_r0, dbg_dos_sys, 1'b0, scorp_rom1, scorp, trdos_en, dbg_trdos, dbg_m1_3d}
                 : (addr[3:0] == 4'd1)  ? dbg_f7ffd      // #7FFD at first #3Dxx fetch
                 : (addr[3:0] == 4'd2)  ? dbg_f1ffd      // #1FFD at first #3Dxx fetch
                 : (addr[3:0] == 4'd3)  ? dbg_faddr      // low addr byte of that fetch
@@ -1270,7 +1289,7 @@ assign dbg_dout = (addr[3:0] == 4'd0)  ? {3'd0, scorp_rom1, scorp, trdos_en, dbg
                 : (addr[3:0] == 4'd11) ? dbg_laststat   // last WD1793 status read
                 : (addr[3:0] == 4'd12) ? {fdd_ready, fdd_drive1, fdd_reset, fdd_side, fdd_intrq, fdd_drq, plusd_en, trdos_en}
                 : (addr[3:0] == 4'd13) ? dbg_nff        // writes to #FF
-                : (addr[3:0] == 4'd14) ? {6'd0, img_mounted}
+                : (addr[3:0] == 4'd14) ? dbg_f7ffd_lost
                 :                        8'hA5;         // sentinel - proves the port responds
 
 u765 #(20'd1800,1) u765

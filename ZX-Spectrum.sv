@@ -385,6 +385,13 @@ wire [7:0] cpu_din =
 		psg_rd   ? psg_dout                                   :
 		ulap_sel ? ulap_dout                                  :
 		~addr[0] ? {1'b1, ula_tape_in, 1'b1, kbd_dout}        :
+		// Fuse gives the Scorpion machine->unattached_port =
+		// spectrum_unattached_port_none, i.e. an unattached port reads #FF rather
+		// than the floating bus, and beta_sr_read() likewise returns #FF while the
+		// interface is inactive. Returning floating-bus screen bytes here makes the
+		// Shadow Monitor's FDC status polling see plausible-but-wrong values and
+		// spin, instead of reading "not ready" and failing cleanly.
+		scorp    ? 8'hFF                                      :
 					  port_ff;
 
 reg init_reset = 1;
@@ -510,7 +517,8 @@ wire       scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] &
 // current_rom = (1FFD[1] ? 2 : 7FFD[4]). So the trap arms from ROM1 *or* ROM2
 // (the Shadow Monitor), never from ROM0. Arming from ROM0 would break BASIC 128,
 // which has genuine subroutines of its own at #3D9D-#3DE9.
-wire       scorp_rom1    = ~scorp_1ffd[0] & (scorp_1ffd[1] | page_reg[4]); // ROM1 or ROM2 at #0000
+wire       scorp_cur_rom = scorp_1ffd[1] | page_reg[4];   // Fuse: ram.current_rom != 0
+wire       scorp_rom1    = ~scorp_1ffd[0] & scorp_cur_rom; // ROM1 or ROM2 at #0000
 wire       scorp_lock    = scorp & page_reg[5]; // #7FFD bit 5: blocks further #7FFD writes until reset (#1FFD stays writable)
 reg  [2:0] page_128k;
 
@@ -1226,7 +1234,12 @@ always @(posedge clk_sys) begin
 		plusd_mem <= 0;
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
-			if(addr[15:14]) trdos_en <= 0;
+			// Fuse z80_ops.c only pages the Beta ROM out above #4000 when
+			// current_rom != 0. TR-DOS 5.03 writes #7FFD with bit 4 clear
+			// (page3 #2B68/#2B7A), making current_rom 0 - after which Fuse keeps
+			// TR-DOS mapped while it runs code above #4000 and we were throwing
+			// it out from under itself.
+			if(addr[15:14] & (~scorp | scorp_cur_rom)) trdos_en <= 0;
 				else if((addr[13:8] == 'h3D) & (scorp ? scorp_rom1 : active_48_rom) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end

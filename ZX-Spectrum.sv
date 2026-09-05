@@ -1151,7 +1151,19 @@ reg         fdd_side;
 reg         fdd_reset;
 wire        fdd_intrq;
 wire        fdd_drq;
-wire        fdd_sel  = trdos_en & addr[2] & addr[1];
+// On the Scorpion the Shadow Service Monitor and the shadow I/O space are one
+// mode: paging in ROM2 (#1FFD bit 1) enables the Beta disk ports just as the
+// #3Dxx trap does. MAME keeps the Beta ports in a view it calls io_shadow_view
+// for the same reason.
+// Measured on hardware: entering the monitor the ROM's own way (#1FFD<-#12, no
+// trap) left fdd_sel dead, so the monitor's disk code spun on a WD1793 that was
+// never decoded - the border showed ROM2 with trdos_en clear. Entering the same
+// monitor via MNI, which does set trdos_en, worked: Disk utility opened and
+// Catalogue returned a proper 'R/W error #1'. This is why the '128 TR-DOS' menu
+// item hung while '48 TR-DOS' and RANDOMIZE USR 15616 - both of which go through
+// the trap - always worked.
+wire        scorp_shadow = scorp & scorp_1ffd[1];
+wire        fdd_sel  = (trdos_en | scorp_shadow) & addr[2] & addr[1];
 reg         fdd_ro;
 wire  [7:0] wdc_dout = (addr[7] & ~plusd_en) ? {fdd_intrq, fdd_drq, 6'h3F} : wd_dout;
 

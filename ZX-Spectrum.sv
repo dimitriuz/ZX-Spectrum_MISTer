@@ -527,21 +527,15 @@ wire       active_48_rom = zx48 | (page_reg[4] & ~plus3) | (plus3 & page_reg[4] 
 
 always_comb begin
 	if(scorp) begin
-		// MAME scorpion_update_memory(): 1FFD[1] ? SYS : ((dos<<1) | rom1)
-		// The Beta ROMCS is a hardware override: once the #3Dxx trap has fired, the
-		// TR-DOS ROM is selected regardless of the machine's own ROM-select bits.
-		// TR-DOS 5.03's 256K RAM detector writes #7FFD=#05 at page3 #2B68 (bit 4
-		// CLEAR, because page3[#03B5]=#ED != #F3 leaves (#5C01)=#00), so deriving
-		// the page as {trdos_en, page_reg[4]} pages TR-DOS out from under itself.
-		// The 48 TR-DOS route only survives that because it enters with #7FFD=#30,
-		// where bit 5 locks paging and the write is a no-op.
 		// Priority, both halves confirmed on hardware:
-		//   #1FFD[1] outranks everything (MAME: BIT(port_1ffd,1) ? ROM_PAGE_SYS : ...).
-		//     Putting TR-DOS above it made the Shadow Monitor unreachable, since
-		//     trdos_en is set during normal boot.
-		//   Below that the Beta ROMCS forces TR-DOS: deriving the page as
-		//     {trdos_en, page_reg[4]} let TR-DOS 5.03's bank scan (#7FFD=#07,
-		//     bit 4 clear) page TR-DOS out from under itself.
+		//   #1FFD[1] outranks everything - MAME scorpion_update_memory() reads
+		//     BIT(port_1ffd,1) ? ROM_PAGE_SYS : ... . Putting TR-DOS above it makes
+		//     the Shadow Monitor unreachable, since trdos_en is set during boot.
+		//   Below that the Beta ROMCS wins: once the #3Dxx trap has fired the TR-DOS
+		//     ROM is selected regardless of the machine's own ROM-select bits, which
+		//     is what Fuse gets by calling memory_romcs_map() last. Deriving the page
+		//     as {trdos_en, page_reg[4]} instead would let any #7FFD write with bit 4
+		//     clear page TR-DOS out from under itself.
 		if(scorp_1ffd[1]) page_rom <= 4'd2;                        // ROM2 Shadow Service Monitor
 		else if(trdos_en) page_rom <= 4'd3;                        // TR-DOS ROMCS
 		else              page_rom <= {3'b000, page_reg[4]};       // 0=BASIC128 1=48K
@@ -1261,11 +1255,9 @@ always @(posedge clk_sys) begin
 		plusd_mem <= 0;
 		if(~old_wr & io_wr & fdd_sel & addr[7]) {fdd_side, fdd_reset, fdd_drive1} <= {~cpu_dout[4], ~cpu_dout[2], !cpu_dout[1:0]};
 		if(m1 && ~old_m1) begin
-			// Fuse z80_ops.c only pages the Beta ROM out above #4000 when
-			// current_rom != 0. TR-DOS 5.03 writes #7FFD with bit 4 clear
-			// (page3 #2B68/#2B7A), making current_rom 0 - after which Fuse keeps
-			// TR-DOS mapped while it runs code above #4000 and we were throwing
-			// it out from under itself.
+			// Fuse z80_ops.c gates *both* halves of the Beta trap on
+			// current_rom != 0, page-in and page-out alike, so while ROM0 is selected
+			// the interface simply holds its state rather than paging out above #4000.
 			// The reduction OR is load-bearing: `addr[15:14] & <1 bit>` zero-extends
 			// the 1-bit operand to 2 bits, so it degrades to `addr[14] & ...` and
 			// silently stops paging TR-DOS out anywhere in #8000-#BFFF. That is where

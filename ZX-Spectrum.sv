@@ -1005,7 +1005,25 @@ keyboard kbd( .* );
 wire  [7:0] mouse_data;
 mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(), .dout(mouse_data), .btn_swap(status[35]));
 
-wire       kemp_sel = addr[5:0] == 6'h1F;
+// The Kempston decode is only six bits wide - it answers #1F, #5F, #9F and #DF -
+// and it is unconditional, sitting *below* fdc_sel in the cpu_din mux. So with
+// TR-DOS paged out (fdd_sel low) it also answers two of the Beta interface's own
+// ports, #1F and #5F, as the empty joystick #00 instead of the #FF an unattached
+// port reads (Fuse: beta_sr_read() returns #FF while !beta_active).
+//
+// The Scorpion Shadow Monitor polls the WD1793 status through #xx1F *after*
+// paging TR-DOS out, and spins until the value is non-zero:
+//     ROM2 #0234: ld hl,#E005 / in a,(#1F) / and h / jr z,#0237
+// #00 hung the "128 TR-DOS" menu entry there forever. (Reproduced in Fuse by
+// forcing those reads to #00: it hangs on the same banner screen at the same PC.)
+//
+// Handing the whole Beta range back unconditionally is wrong the other way -
+// Kempston is active high, so #FF reads as every direction plus fire held down,
+// and a Fuse trace shows the TR-DOS file browser polling #0C1F ~97k times. Both
+// callers are separated by #1FFD[1]: only the Shadow Monitor runs with its own
+// ROM2 paged in, so that is the one case where the Beta ports win.
+wire       beta_port = &addr[4:0] & (~addr[7] | &addr[7:5]); // #1F #3F #5F #7F #FF
+wire       kemp_sel = (addr[5:0] == 6'h1F) & ~(scorp & beta_port & scorp_1ffd[1]);
 reg  [7:0] kemp_dout;
 reg        kemp_mode = 0;
 always @(posedge clk_sys) begin

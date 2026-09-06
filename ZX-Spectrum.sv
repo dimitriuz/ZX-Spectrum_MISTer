@@ -1248,7 +1248,12 @@ always @(posedge clk_sys) begin
 			// (page3 #2B68/#2B7A), making current_rom 0 - after which Fuse keeps
 			// TR-DOS mapped while it runs code above #4000 and we were throwing
 			// it out from under itself.
-			if(addr[15:14] & (~scorp | scorp_cur_rom)) trdos_en <= 0;
+			// The reduction OR is load-bearing: `addr[15:14] & <1 bit>` zero-extends
+			// the 1-bit operand to 2 bits, so it degrades to `addr[14] & ...` and
+			// silently stops paging TR-DOS out anywhere in #8000-#BFFF. That is where
+			// the 128 TR-DOS boot loader ends up (Fuse unpages at PC=#8018), so the
+			// browser ran with the TR-DOS ROM still over #0000-#3FFF.
+			if((|addr[15:14]) & (~scorp | scorp_cur_rom)) trdos_en <= 0;
 				else if((addr[13:8] == 'h3D) & (scorp ? scorp_rom1 : active_48_rom) & ~&mmc_mode) trdos_en <= 1;
 				//else if(~mod[0] & (addr == 'h66)) trdos_en <= 1;
 		end

@@ -162,10 +162,9 @@ Select **Scorpion ZS-256** in the OSD **Memory** menu. This mode implements the 
 
 DivMMC/esxdos is disabled in this mode (a real Scorpion has no DivMMC; the built-in Beta 128 covers disk access).
 
-**Known limitation:** the **128 TR-DOS** menu entry does not work; use **48 TR-DOS** or
-`RANDOMIZE USR 15616` from 128 BASIC instead. Both reach TR-DOS and load games,
-including 256K Scorpion titles. TR-DOS repages the #C000 window during its RAM
-detector, which discards the Shadow Monitor's stack and return path; see
-`docs/scorpion-zs256-design.md` section 6 for the full analysis.
+All five boot-menu entries work, as do `RANDOMIZE USR 15616` from 128 BASIC and
+the Shadow Service Monitor on **F11**. The **128 TR-DOS** entry used to hang on
+its banner; `docs/scorpion-zs256-design.md` section 6 has the analysis of the two
+bugs behind it.
 
 Limitations: #FE selective decode is not modeled (standard ULA-48 #FE behavior), the Scorpion's 58-key keyboard matrix is not emulated (standard key mapping — key positions differ from a real Scorpion keyboard), and Turbo+/GMX variants are out of scope.

@@ -1,0 +1,470 @@
+--- a/spectrum.c	2026-03-20 22:26:09.000000000 +0100
++++ b/spectrum.c	2026-09-06 11:15:31.601110061 +0200
+@@ -49,6 +49,7 @@
+ #include "ui/ui.h"
+ #include "ui/uijoystick.h"
+ #include "z80/z80.h"
++#include "zz.h"
+ 
+ /* 1040 KB of RAM */
+ libspectrum_byte RAM[ SPECTRUM_RAM_PAGES ][0x4000];
+@@ -95,6 +96,7 @@
+   rzx_frame();
+   psg_frame();
+   spectrum_frame();
++  zz_frame_hook();
+   z80_interrupt();
+   ui_joystick_poll();
+   timer_estimate_speed();
+@@ -112,6 +114,7 @@
+ static int
+ spectrum_init( void *context )
+ {
++  zz_init();
+   spectrum_frame_event = event_register( spectrum_frame_event_fn,
+ 					 "End of frame" );
+ 
+@@ -300,3 +303,252 @@
+ {
+   return 0xff;
+ }
++
++/* ======================= zz trace harness ======================= */
++/* Ad-hoc instrumentation for the Scorpion 128-TR-DOS investigation. */
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include "screenshot.h"
++#include "peripherals/disk/beta.h"
++#include "zz.h"
++
++int zz_on = 0;
++int zz_mut = 0;
++static int zz_allout = 0;
++int zz_pc_on = 0;
++
++static FILE *zz_fp = NULL;
++static long  zz_pc_left = 0;
++static unsigned long zz_frame = 0;
++static unsigned long zz_instr = 0;
++static unsigned long zz_exit_frame = 0;
++static unsigned long zz_scr_every = 0;
++static char  zz_scr_pfx[400] = "";
++static int   zz_arm_pc = -1;
++static int   zz_arm_7ffd = -1;
++static int   zz_arm_1ffd = -1;
++static int   zz_armed = 0;
++static unsigned long zz_arm_frame = 0;
++static int   zz_verbose = 1;
++static int   zz_keydur = 12;
++static unsigned long zz_dump_frame = 0;
++static char  zz_dump_pfx[400] = "";
++
++#define ZZ_MAXKEYS 64
++static struct { unsigned long frame; int key; } zz_kdown[ ZZ_MAXKEYS ];
++static int zz_nkeys = 0;
++
++static int
++zz_keyname( const char *s )
++{
++  if( !strcasecmp( s, "enter" ) )  return KEYBOARD_Enter;
++  if( !strcasecmp( s, "space" ) )  return KEYBOARD_space;
++  if( !strcasecmp( s, "caps" ) )   return KEYBOARD_Caps;
++  if( !strcasecmp( s, "symbol" ) ) return KEYBOARD_Symbol;
++  if( strlen( s ) == 1 ) {
++    char c = s[0];
++    if( c >= '0' && c <= '9' ) return KEYBOARD_0 + ( c - '0' );
++    if( c >= 'a' && c <= 'z' ) return KEYBOARD_a + ( c - 'a' );
++    if( c >= 'A' && c <= 'Z' ) return KEYBOARD_a + ( c - 'A' );
++  }
++  return 0;
++}
++
++void
++zz_init( void )
++{
++  const char *e;
++  static int done = 0;
++  if( done ) return;
++  done = 1;
++
++  if( ( e = getenv( "ZZ_MUT" ) ) ) zz_mut = strtol( e, NULL, 0 );
++
++  e = getenv( "ZZ_LOG" );
++  if( !e ) return;
++  zz_fp = fopen( e, "w" );
++  if( !zz_fp ) return;
++  setvbuf( zz_fp, NULL, _IOLBF, 0 );
++  zz_on = 1;
++
++  if( ( e = getenv( "ZZ_EXIT" ) ) )      zz_exit_frame = strtoul( e, NULL, 0 );
++  if( ( e = getenv( "ZZ_SCR_EVERY" ) ) ) zz_scr_every  = strtoul( e, NULL, 0 );
++  if( ( e = getenv( "ZZ_SCR" ) ) )       { strncpy( zz_scr_pfx, e, sizeof(zz_scr_pfx)-1 ); }
++  if( ( e = getenv( "ZZ_KEYDUR" ) ) )    zz_keydur     = atoi( e );
++  if( ( e = getenv( "ZZ_DUMP_FRAME" ) ) ) zz_dump_frame = strtoul( e, NULL, 0 );
++  if( ( e = getenv( "ZZ_DUMP" ) ) )      strncpy( zz_dump_pfx, e, sizeof(zz_dump_pfx)-1 );
++  if( ( e = getenv( "ZZ_ARM_PC" ) ) )    zz_arm_pc     = strtol( e, NULL, 16 );
++  if( ( e = getenv( "ZZ_ARM_7FFD" ) ) )  zz_arm_7ffd   = strtol( e, NULL, 16 );
++  if( ( e = getenv( "ZZ_ARM_1FFD" ) ) )  zz_arm_1ffd   = strtol( e, NULL, 16 );
++  if( ( e = getenv( "ZZ_PCMAX" ) ) )     zz_pc_left    = strtol( e, NULL, 0 );
++  if( ( e = getenv( "ZZ_ARM_FRAME" ) ) ) { zz_arm_frame = strtoul( e, NULL, 0 ); zz_verbose = 0; }
++  if( getenv( "ZZ_QUIET" ) ) zz_verbose = 0;
++  if( getenv( "ZZ_ALLOUT" ) ) zz_allout = 1;
++
++  if( ( e = getenv( "ZZ_KEYS" ) ) ) {
++    char buf[1024], *p, *tok;
++    strncpy( buf, e, sizeof(buf)-1 ); buf[sizeof(buf)-1] = 0;
++    p = buf;
++    while( ( tok = strsep( &p, "," ) ) && zz_nkeys < ZZ_MAXKEYS ) {
++      char *colon = strchr( tok, ':' );
++      if( !colon ) continue;
++      *colon = 0;
++      zz_kdown[ zz_nkeys ].frame = strtoul( tok, NULL, 0 );
++      zz_kdown[ zz_nkeys ].key   = zz_keyname( colon + 1 );
++      if( zz_kdown[ zz_nkeys ].key ) zz_nkeys++;
++    }
++  }
++
++  zz_log( "# zz harness: exit=%lu scr_every=%lu keys=%d arm pc=%x 7ffd=%x 1ffd=%x pcmax=%ld",
++          zz_exit_frame, zz_scr_every, zz_nkeys, zz_arm_pc, zz_arm_7ffd, zz_arm_1ffd, zz_pc_left );
++}
++
++int
++zz_verbose_get( void )
++{
++  return zz_verbose;
++}
++
++void
++zz_log( const char *fmt, ... )
++{
++  va_list ap;
++  if( !zz_fp ) return;
++  fprintf( zz_fp, "[%6lu/%10lu] ", zz_frame, zz_instr );
++  va_start( ap, fmt );
++  vfprintf( zz_fp, fmt, ap );
++  va_end( ap );
++  fputc( '\n', zz_fp );
++}
++
++static void
++zz_state( char *out, size_t n )
++{
++  snprintf( out, n, "7ffd=%02x 1ffd=%02x lock=%d rom=%d page=%d spec=%d beta=%d",
++            machine_current->ram.last_byte, machine_current->ram.last_byte2,
++            machine_current->ram.locked, machine_current->ram.current_rom,
++            machine_current->ram.current_page, machine_current->ram.special,
++            beta_active );
++}
++
++void
++zz_out( unsigned port, unsigned val )
++{
++  char s[160];
++  if( !zz_on ) return;
++  /* only the ports that matter: paging + beta */
++  if( zz_allout || ( port & 0x8002 ) == 0x0000 || ( port & 0x00ff ) == 0x00ff ||
++      ( port & 0x00ff ) == 0x001f || ( port & 0x00ff ) == 0x003f ||
++      ( port & 0x00ff ) == 0x005f || ( port & 0x00ff ) == 0x007f ) {
++    zz_state( s, sizeof s );
++    zz_log( "OUT  %04x,%02x  PC=%04x SP=%04x AF=%04x BC=%04x DE=%04x HL=%04x IX=%04x IY=%04x  pre[%s]",
++            port, val, z80.pc.w, z80.sp.w, z80.af.w, z80.bc.w, z80.de.w, z80.hl.w,
++            z80.ix.w, z80.iy.w, s );
++  }
++}
++
++void
++zz_in( unsigned port )
++{
++  if( !zz_on || !zz_allout ) return;
++  zz_log( "IN   %04x  PC=%04x beta=%d", port, z80.pc.w, beta_active );
++}
++
++void
++zz_beta( int paged )
++{
++  char s[160];
++  if( !zz_on ) return;
++  if( zz_verbose ) {
++    zz_state( s, sizeof s );
++    zz_log( "BETA %s PC=%04x [%s]", paged ? "PAGE  " : "UNPAGE", z80.pc.w, s );
++  }
++
++  if( paged && !zz_armed && zz_pc_left > 0 &&
++      ( zz_arm_pc   < 0 || z80.pc.w                       == zz_arm_pc ) &&
++      ( zz_arm_7ffd < 0 || machine_current->ram.last_byte  == zz_arm_7ffd ) &&
++      ( zz_arm_1ffd < 0 || machine_current->ram.last_byte2 == zz_arm_1ffd ) ) {
++    zz_armed = 1;
++    zz_pc_on = 1;
++    zz_log( "ARM  instruction trace, %ld instructions", zz_pc_left );
++  }
++}
++
++void
++zz_pc_hook( void )
++{
++  if( !zz_fp ) return;
++  fprintf( zz_fp, "i %04x %02x %02x %d %d %d\n", z80.pc.w,
++           machine_current->ram.last_byte, machine_current->ram.last_byte2,
++           machine_current->ram.current_rom, machine_current->ram.current_page,
++           beta_active );
++  if( --zz_pc_left <= 0 ) {
++    zz_pc_on = 0;
++    zz_log( "DISARM instruction trace" );
++  }
++}
++
++void
++zz_frame_hook( void )
++{
++  int i;
++  char s[160];
++  if( !zz_on ) return;
++  zz_frame++;
++
++  for( i = 0; i < zz_nkeys; i++ ) {
++    if( zz_kdown[ i ].frame == zz_frame ) {
++      zz_state( s, sizeof s );
++      zz_log( "KEY  down %04x [%s]", zz_kdown[ i ].key, s );
++      keyboard_press( zz_kdown[ i ].key );
++    }
++    if( zz_kdown[ i ].frame + zz_keydur == zz_frame ) {
++      keyboard_release( zz_kdown[ i ].key );
++      zz_log( "KEY  up   %04x", zz_kdown[ i ].key );
++    }
++  }
++
++  if( zz_arm_frame && !zz_armed && zz_frame >= zz_arm_frame ) {
++    zz_armed = 1;
++    zz_verbose = 1;
++    if( zz_pc_left > 0 ) zz_pc_on = 1;
++    zz_log( "ARM  at frame %lu (pc trace %ld)", zz_frame, zz_pc_left );
++  }
++
++  if( zz_scr_every && zz_scr_pfx[0] && ( zz_frame % zz_scr_every ) == 0 ) {
++    char fn[512];
++    snprintf( fn, sizeof fn, "%s%06lu.scr", zz_scr_pfx, zz_frame );
++    screenshot_scr_write( fn );
++  }
++
++  if( ( zz_frame % 50 ) == 0 ) {
++    zz_state( s, sizeof s );
++    zz_log( "TICK [%s]", s );
++  }
++
++  if( zz_dump_frame && zz_frame == zz_dump_frame && zz_dump_pfx[0] ) {
++    int p;
++    for( p = 0; p < 16; p++ ) {
++      char fn[512]; FILE *f;
++      snprintf( fn, sizeof fn, "%spage%02d.bin", zz_dump_pfx, p );
++      f = fopen( fn, "wb" );
++      if( f ) { fwrite( RAM[p], 1, 0x4000, f ); fclose( f ); }
++    }
++    zz_log( "DUMP RAM pages at frame %lu", zz_frame );
++  }
++
++  if( zz_exit_frame && zz_frame >= zz_exit_frame ) {
++    if( zz_scr_pfx[0] ) {
++      char fn[512];
++      snprintf( fn, sizeof fn, "%sfinal.scr", zz_scr_pfx );
++      screenshot_scr_write( fn );
++    }
++    zz_log( "EXIT at frame %lu", zz_frame );
++    fflush( zz_fp );
++    exit( 0 );
++  }
++}
++/* ===================== end zz trace harness ===================== */
+--- a/periph.c	2026-03-20 22:26:09.000000000 +0100
++++ b/periph.c	2026-09-06 11:24:54.893750553 +0200
+@@ -34,7 +34,11 @@
+ #include "peripherals/multiface.h"
+ #include "peripherals/ula.h"
+ #include "rzx.h"
++#include "machines/spec128.h"
++#include "peripherals/disk/beta.h"
++#include "z80/z80.h"
+ #include "settings.h"
++#include "zz.h"
+ #include "ui/ui.h"
+ 
+ /*
+@@ -336,6 +340,8 @@
+     return value;
+   }
+ 
++  zz_in( port );
++
+   /* If we're not doing RZX playback, get the byte normally */
+   callback_info.port = port;
+   callback_info.attached = 0x00;
+@@ -348,6 +354,25 @@
+       periph_merge_floating_bus( callback_info.value, callback_info.attached,
+                                  machine_current->unattached_port() );
+ 
++  /* mutation 32: our RTL has an ungated Kempston joystick at
++     addr[5:0] == 6'h1F, which sits *below* the FDC in the read mux.  So while
++     the Beta interface is paged out, every port whose low six bits are 0x1F
++     reads the (empty) joystick 0x00 instead of the unattached 0xFF. */
++  /* mutation 64: models the FIXED core - the Kempston still answers the six-bit
++     pattern, but the Beta port low bytes #1F/#3F/#5F/#7F/#FF are excluded, so
++     only #9F and #DF are still claimed. */
++  if( ( zz_mut & 64 ) && !beta_active && ( port & 0x3f ) == 0x1f &&
++      ( port & 0xff ) != 0x1f && ( port & 0xff ) != 0x5f ) {
++    zz_log( "MUT64 IN %04x -> 00 PC=%04x", port, z80.pc.w );
++    callback_info.value = 0x00;
++  }
++
++  if( ( zz_mut & 32 ) && !beta_active && ( port & 0x3f ) == 0x1f ) {
++    zz_log( "MUT32 IN %04x -> 00 (was %02x) PC=%04x", port, callback_info.value,
++            z80.pc.w );
++    callback_info.value = 0x00;
++  }
++
+   /* If we're RZX recording, store this byte */
+   if( rzx_recording ) rzx_store_byte( callback_info.value );
+ 
+@@ -398,7 +423,20 @@
+ 
+   callback_info.port = port;
+   callback_info.value = b;
+-  
++
++  zz_out( port, b );
++
++  /* mutation 16: our RTL decodes #7FFD as (A15==0 && A1==0) with no A14 term,
++     with the #1FFD shape taking precedence.  Fuse (and the +2A/+3) require
++     A14==1, so ports like #001C are ignored there and write #7FFD here. */
++  if( ( zz_mut & 16 ) &&
++      ( port & 0x8002 ) == 0x0000 &&        /* A15==0, A1==0            */
++      ( port & 0xc002 ) != 0x4000 &&        /* not the real #7FFD shape */
++      ( port & 0xf002 ) != 0x1000 ) {       /* not the #1FFD shape      */
++    zz_log( "MUT16 port %04x,%02x -> #7FFD", port, b );
++    spec128_memoryport_write( 0x7ffd, b );
++  }
++
+   g_slist_foreach( ports, write_peripheral, &callback_info );
+ }
+ 
+--- a/machines/scorpion.c	2026-03-20 22:26:09.000000000 +0100
++++ b/machines/scorpion.c	2026-09-06 09:53:34.676998758 +0200
+@@ -41,6 +41,8 @@
+ #include "spec48.h"
+ #include "specplus3.h"
+ #include "spectrum.h"
++#include "zz.h"
++#include "z80/z80.h"
+ 
+ static int scorpion_reset( void );
+ static int scorpion_memory_map( void );
+@@ -149,5 +151,18 @@
+ 
+   memory_romcs_map();
+ 
++  /* RTL divergence models: our page_rom gives #1FFD[1] (and #1FFD[0]) priority
++     over the Beta ROMCS; Fuse's memory_romcs_map() overrides both. */
++  if( ( zz_mut & 2 ) && beta_active && ( machine_current->ram.last_byte2 & 0x02 ) )
++    memory_map_16k( 0x0000, memory_map_rom, 2 );
++  if( ( zz_mut & 4 ) && beta_active && ( machine_current->ram.last_byte2 & 0x01 ) )
++    memory_map_16k( 0x0000, memory_map_ram, 0 );
++
++  if( zz_on && zz_verbose_get() )
++    zz_log( "MAP  rom=%d page=%d spec=%d beta=%d 7ffd=%02x 1ffd=%02x lock=%d PC=%04x",
++            rom, page, machine_current->ram.special, beta_active,
++            machine_current->ram.last_byte, machine_current->ram.last_byte2,
++            machine_current->ram.locked, z80.pc.w );
++
+   return 0;
+ }
+--- a/peripherals/disk/beta.c	2026-03-08 12:46:32.000000000 +0100
++++ b/peripherals/disk/beta.c	2026-09-06 09:47:01.153629135 +0200
+@@ -51,6 +51,7 @@
+ #include "ui/uimedia.h"
+ #include "unittests/unittests.h"
+ #include "utils.h"
++#include "../../zz.h"
+ #include "wd_fdc.h"
+ #include "z80/z80.h"
+ #include "z80/z80_macros.h"
+@@ -118,6 +119,7 @@
+   beta_active = 1;
+   machine_current->ram.romcs = 1;
+   machine_current->memory_map();
++  zz_beta( 1 );
+   debugger_event( page_event );
+ }
+ 
+@@ -127,6 +129,7 @@
+   beta_active = 0;
+   machine_current->ram.romcs = 0;
+   machine_current->memory_map();
++  zz_beta( 0 );
+   debugger_event( unpage_event );
+ }
+ 
+--- a/z80/z80_ops.c	2026-03-20 22:26:09.000000000 +0100
++++ b/z80/z80_ops.c	2026-09-06 09:54:53.244470155 +0200
+@@ -54,6 +54,8 @@
+ #include "tape.h"
+ #include "z80.h"
+ 
++#include "../zz.h"
++
+ #include "z80_macros.h"
+ 
+ #ifndef HAVE_ENOUGH_MEMORY
+@@ -141,6 +143,8 @@
+ 
+   while( tstates < event_next_event ) {
+ 
++    if( zz_pc_on ) zz_pc_hook();
++
+     /* Profiler */
+     CHECK( profile, profile_active )
+ 
+@@ -174,7 +178,8 @@
+             machine_current->ram.current_rom )
+ 
+     if( beta_active ) {
+-      if( NOT_128_TYPE_OR_IS_48_TYPE && PC >= 16384 ) {
++      if( ( ( zz_mut & 8 ) ? 1 : NOT_128_TYPE_OR_IS_48_TYPE ) &&
++          ( ( zz_mut & 1 ) ? ( PC & 0x4000 ) : ( PC >= 16384 ) ) ) {
+ 	beta_unpage();
+       }
+     } else if( ( PC & beta_pc_mask ) == beta_pc_value &&
+--- a/z80/coretest.c	2026-03-08 12:46:32.000000000 +0100
++++ b/z80/coretest.c	2026-09-06 09:53:45.621640268 +0200
+@@ -650,6 +650,10 @@
+ 
+ settings_info settings_current;
+ 
++int zz_pc_on = 0;
++int zz_mut = 0;
++void zz_pc_hook( void ) { }
++
+ libspectrum_word beta_pc_mask;
+ libspectrum_word beta_pc_value;
+ 
+--- a/zz.h	2026-09-02 19:52:38.617160701 +0200
++++ b/zz.h	2026-09-06 11:15:40.256655625 +0200
+@@ -0,0 +1,18 @@
++/* zz.h: ad-hoc tracing harness for the Scorpion 128-TR-DOS investigation */
++#ifndef ZZ_H
++#define ZZ_H
++
++extern int zz_on;
++extern int zz_mut;   /* RTL-divergence mutations, see ZZ_MUT */        /* any tracing at all (ZZ_LOG set) */
++extern int zz_pc_on;     /* per-instruction PC trace armed */
++
++void zz_init( void );
++int  zz_verbose_get( void );
++void zz_log( const char *fmt, ... );
++void zz_pc_hook( void );
++void zz_frame_hook( void );
++void zz_beta( int paged );
++void zz_out( unsigned port, unsigned val );
++void zz_in( unsigned port );
++
++#endif

@@ -25,7 +25,9 @@ building with Quartus and running on a DE10-Nano — see "Verification path" bel
 | `sys/` | MiSTer system blocks (`video_mixer`, `hq2x`) |
 | `tools/` | ROM build scripts; `scorp294.rom` = Scorpion v2.94 source pages |
 | `releases/boot.rom` | 256 KB generated boot image — rebuild with `tools/build_boot_rom.py` (SHA-verified) |
-| `docs/scorpion-zs256-design.md` | Authoritative Scorpion reference: hardware semantics, decisions, limitations |
+| `docs/scorpion-zs256-design.md` | Authoritative Scorpion reference: hardware semantics, decisions, solved bugs |
+| `docs/fuse-harness.md` | Instrumented Fuse 1.7 as a scriptable reference machine + RTL-divergence mutations |
+| `docs/hardware-testing.md` | Driving the DE10-Nano over ssh: keys, screenshots, reading a hung machine |
 | `sim/` | Retired iverilog harness — reference only, does not compile (see below) |
 
 ## Verification path: hardware
@@ -50,7 +52,16 @@ actually observes.
 
 The files under `sim/` are left in the tree for reference but **do not compile against the
 current RTL**. Verify on the DE10-Nano instead; the hardware test plan is
-§5 of `docs/scorpion-zs256-design.md`.
+§5 of `docs/scorpion-zs256-design.md`, and `docs/hardware-testing.md` has the ssh
+recipe (the loop is scripted apart from the OSD).
+
+**Before changing the RTL to fix a Scorpion bug, reproduce it in Fuse first.**
+`docs/fuse-harness.md` builds an instrumented Fuse 1.7 that boots the same ROM set
+and disk headlessly, logs every paging event with the PC that caused it, and can
+be switched over to our RTL's rules one at a time (`ZZ_MUT`). A hypothesis costs
+seconds there and 12 minutes plus a human in Quartus. Both bugs in §6 of the
+design doc were found that way, and the fix for each was checked in Fuse before
+the core was rebuilt.
 
 ## Quartus build (FPGA firmware)
 

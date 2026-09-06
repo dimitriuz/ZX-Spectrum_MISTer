@@ -85,7 +85,7 @@ prefix, so their mapping is bit-for-bit unchanged.
    - `#1FFD` bit 0 set → page_rom = 0, with a decode override putting RAM bank 0 at #0000 (see 5);
    - `#1FFD` bit 1 set → page_rom = 2 (Shadow Monitor);
    - else `#7FFD` bit 4: 1 → page_rom = 1 (48K BASIC), 0 → page_rom = 0 (BASIC 128).
-   - TR-DOS entry (ROM3) is reached by the built-in Beta 128 FDC path, not via #0000 ROM select — in Scorpion mode `trdos_en` forces page_rom = 3 while a disk is active. The #3Dxx M1 trap is gated `active_48_rom | (scorp & ~scorp_1ffd[0] & ~scorp_1ffd[1])`: reachable from ROM0 (the 128 menu's TR-DOS entry) and ROM1 (48 BASIC), but never from RAM bank 0 or from the Shadow Monitor.
+   - TR-DOS entry (ROM3) is reached by the built-in Beta 128 FDC path, not via #0000 ROM select — in Scorpion mode `trdos_en` forces page_rom = 3 while a disk is active. The #3Dxx M1 trap is gated on `scorp_rom1 = ~#1FFD[0] & (#1FFD[1] | #7FFD[4])`, matching Fuse's `ram.current_rom != 0`: it arms from ROM1 (48 BASIC) or ROM2 (the Shadow Monitor, which is how the 128 menu's TR-DOS entry gets there), never from ROM0 - BASIC 128 has genuine subroutines of its own at #3D9D-#3DE9 - and never with RAM bank 0 mapped at #0000. The matching page-out is `(|addr[15:14]) & (~scorp | scorp_cur_rom)`; see section 6 for why the reduction OR is load-bearing.
 5. **#1FFD register**: new `reg [7:0] scorp_1ffd`. Write decode: `scorp_1ffd_wr = scorp & ~addr[15] & ~addr[1] & addr[12] & ~addr[13] & ~addr[14]` (#1FFD), latching `cpu_dout` on the io_wr edge. Cleared to 0 on reset. Port read conformance (speccy-bootcamp): #7FFD is **write-only** (no mux arm — reads fall through to the ULA port like other unattached ports); #1FFD reads return **#FF** on non-Turbo boards (this core models the base ZS-256, no Turbo), so `cpu_din` has one Scorpion arm: `(scorp & addr[14:0]==15'h1FFD) ? 8'hFF`. Shadow Monitor exit is a #1FFD *write* (=0), not a read.
 6. **Paging** (lines 420–422): in Scorpion mode the map matches real hardware (Fuse `scorpion_memory_map` + speccy-bootcamp): #4000–#7FFF stays fixed to bank 5, #8000–#BFFF fixed to bank 2, and only #C000–#FFFF is paged: `ram_addr = {1'b0, scorp_page[3:0], addr[13:0]}` where `scorp_page = {scorp_1ffd[4], page_reg[2:0]}`. Bank *b* therefore occupies SDRAM column *b* (offsets 0–0x3FFF within the bank). **Bit-5 lockout** (worldofspectrum FAQ: "D5 — 1 in this bit will block further output in port 7FFD, until reset"; Fuse `spec128_memoryport_write`: `if(locked) return; … locked = b & 0x20`): `scorp_lock = scorp & page_reg[5]` gates the **#7FFD** write latch only — the locking write itself applies, all later #7FFD writes are ignored until machine reset. #1FFD is deliberately *not* locked: both the FAQ text and Fuse scope the lock to #7FFD, and locking #1FFD would trap the machine in the Shadow Monitor, whose exit path is a #1FFD write (48 BASIC sets bit 5 on entry, so this is the common case, not a corner case). Implemented as a separate wire (not via `page_disable`) so the tape player's `.mode48k(page_disable)` input is unaffected in Scorpion mode.
 7. **vram mirror** (line ~485): no new logic needed — the existing `vram_we` first term `((ram_addr[24:16]==1) & ram_addr[14])` already mirrors every legitimate Scorpion screen-bank write into the ULA dpram at `{bank-half, addr[13:0]}` (column 5 via #4000 → half 0; columns 5/7 via paged #C000 → half = column[1]). An earlier draft added a `scorp_vram` term, but it mirrored non-screen writes through #C000/#8000 and was removed; Scorpion keeps the identical mirror semantics as all other machines. Verified by `test_paging` dpram checks (mirror on page 5/7 and #4000, no mirror on data banks).
@@ -145,86 +145,86 @@ to the DE10-Nano, and run through:
    Pentagon 1024; on the +3 specifically, mount a .dsk, **reset, and confirm the drive
    is still ready** (this is the path the reverted `u765.sv` change broke).
 
-## 6. Known limitation: the "128 TR-DOS" menu item
+## 6. Solved: the "128 TR-DOS" menu item
 
-Everything else on the machine works, verified on a DE10-Nano against a real
-bootable TR-DOS disk. This one menu entry does not, and the cause is understood
-but not yet fixed.
+Selecting **"128 TR-DOS"** from the Scorpion boot menu used to stop dead on the
+"128 TR-DOS" banner (ROM 2.94) while 48 TR-DOS, `RANDOMIZE USR 15616` and the
+Shadow Monitor all worked. Two independent RTL bugs were behind it; both are
+fixed, and both were first reproduced in an instrumented Fuse 1.7 before the RTL
+was touched (see `fuse-harness.md`).
 
-### What works
+### Bug 1 - the Beta ROM was never paged out in `#8000-#BFFF`
 
-| | |
-|---|---|
-| Boot, 128 BASIC, 48 BASIC, Calculator | yes |
-| **48 TR-DOS** from the menu | yes - boots the disk |
-| `RANDOMIZE USR 15616` from 128 BASIC | yes - boots the disk |
-| Loading games, including Scorpion 256K titles | yes |
-| Shadow Service Monitor (F11), all menus | yes |
-| Monitor > Disk utility > Test disk | yes - full surface, 2560 sectors, 0 bad |
-| All 16 RAM banks incl. extended `#1FFD[4]` | yes |
-| `.z80` snapshots (hw=10, ARCH_SCORP) | yes |
+```systemverilog
+if(addr[15:14] & (~scorp | scorp_cur_rom)) trdos_en <= 0;   // wrong
+if((|addr[15:14]) & (~scorp | scorp_cur_rom)) trdos_en <= 0; // fixed
+```
 
-Note that `Monitor > Disk utility > Catalogue` returns `R/W error #9`. That is
-**not** a core bug - Fuse 1.9 does the same on the same disk, which then loads
-normally.
+A bitwise `&` extends its operands to the wider one and zero-extends the
+1-bit side, so `addr[15:14] & <1 bit>` is `{1'b0, addr[14] & cond}` - the
+`addr[15]` term is silently dropped and TR-DOS is never paged out anywhere in
+`#8000-#BFFF`. Measured with iverilog rather than assumed:
 
-### The failure
+```
+  PC     as-written  reduction-OR   plain
+  8018      0            1           1
+```
 
-Selecting "128 TR-DOS" hangs (ROM 2.94 resets the machine instead). The same
-ROM and disk work in Fuse 1.7 and Fuse 1.9.
+That matters because the TR-DOS boot loader ends by jumping to `#8018`, where
+the reference pages the Beta ROM out (`BETA UNPAGE PC=8018`, the last beta event
+of the run) - so the file browser ran with the TR-DOS ROM still over
+`#0000-#3FFF`. The same expression governs every machine, so this had also
+regressed 48 TR-DOS and the Pentagon.
 
-### What was measured on hardware
+### Bug 2 - the Kempston answered the Beta status port
 
-Entry is correct. An in-core trace capture (see the debug port below) recorded
-the first `#3Dxx` M1 fetch at **`#3D30` with `#7FFD=0x10` and `#1FFD=0x10`** -
-exactly the monitor's RAM gateway at `#E358`, which does
-`#7FFD<-#10 / #1FFD<-#10 / jp #3D30`. The Beta trap arms correctly.
+```systemverilog
+wire kemp_sel = addr[5:0] == 6'h1F;                                   // wrong
+wire kemp_sel = (addr[5:0] == 6'h1F) & ~(scorp & beta_port & scorp_1ffd[1]); // fixed
+```
 
-The fault is what happens next. Two sticky latches, displayed on the border,
-both fire during the attempt:
+The Kempston decode is six bits wide - it answers `#1F`, `#5F`, `#9F` and `#DF` -
+and it is unconditional, sitting *below* `fdc_sel` in the `cpu_din` mux. So with
+TR-DOS paged out it also answered `#1F` and `#5F` with the empty joystick `#00`
+rather than the `#FF` an unattached port reads.
 
-- `#7FFD` bit 4 is **cleared** while TR-DOS is paged in
-- the `#C000` window is **repaged** while TR-DOS is paged in
+The Shadow Monitor polls the WD1793 status through `#xx1F` **after** paging
+TR-DOS out, and spins until the value is non-zero:
 
-TR-DOS 5.03 does this itself: its 256K RAM detector writes `#7FFD` from eight
-sites in page 3, including `#2B68` (`(#5C01) OR #05`) and `#2B7A` (`#00`), and
-`#7FFD=0x07` was captured on hardware. Meanwhile the monitor keeps everything
-it needs to return - `SP = #E2B5`, the `#E34C` return address, the decrypted
-gateway blob at `#E2DB-#E391`, and the `#DE15/#DE17` print pointers TR-DOS
-writes through - in that same `#C000` window, bank 8. When TR-DOS repages it,
-the return path is gone.
+```
+0234: 21 05 E0   ld hl,#E005
+0237: DB 1F      in a,(#1F)
+0239: A4         and h        ; mask #E0
+023A: 28 FB      jr z,#0237   ; loop while zero
+```
 
-This explains the whole pattern:
+`#FF & #E0` exits; `#00 & #E0` loops forever. That is the banner hang, and the
+machine's own Shadow Monitor confirmed it on hardware: `A = #00`, `HL = #E005`
+(the mask this code loads), `SP = #E2B1`, `IX/IY` the monitor's own constants.
 
-- **Test disk works** - the monitor drives the WD1793 directly, no TR-DOS call
-- **48 TR-DOS works** - it enters with `#7FFD=#30`; bit 5 sets the paging lock,
-  so every one of TR-DOS's `#7FFD` writes is a silent no-op
-- **`USR 15616` works** - same, via `#30`
-- **128 TR-DOS fails** - it enters with `#7FFD=#10`, unlocked, so they all land
+Handing the whole Beta range back unconditionally is wrong the other way -
+Kempston is active high, so `#FF` reads as every direction plus fire held down,
+and a Fuse trace shows the TR-DOS file browser polling `#0C1F` (`PC=#84EF`)
+about 97,000 times. The two callers are separated by `#1FFD[1]`: only the Shadow Monitor runs
+with its own ROM2 paged in, so that is the one case where the Beta ports win and
+everything else keeps the joystick.
 
-### What has been ruled out
+### Why the other routes always worked
 
-- Not the ROM build. Fails identically with our v2.94 pages and with Fuse's own
-  256s-0..3 pages (which differ in pages 2 and 3).
-- Not the disk. The same image boots in Fuse and via 48 TR-DOS here.
-- Not the FDC or disk timing. Full-surface verify passes with zero errors.
-- Not the Beta trap gate, the ROM page priority, the TR-DOS ROMCS override, the
-  unattached-port value, or the Beta port decode - all of these were wrong in
-  various ways, all have been fixed against Fuse/MAME, and none of them fixes
-  this.
+**48 TR-DOS** and **`USR 15616`** enter TR-DOS directly and never execute the
+monitor's return stub, so they never reach the `#0237` poll. 48 TR-DOS also
+enters with `#7FFD=#30`, where bit 5 locks paging.
 
-### The open question
+### What is still loose (latent, not exercised)
 
-Fuse survives the same `#7FFD` writes with the same page arithmetic
-(`page = {1FFD[4], 7FFD[2:0]}`, identical to ours). Why the repaged `#C000`
-window breaks the return path here and not there is the one thing left to
-establish, and it needs a Fuse trace of the bank across that call rather than
-another guess at the RTL.
-
-### Workaround
-
-Use **48 TR-DOS** from the menu, or `RANDOMIZE USR 15616` from 128 BASIC. Both
-reach TR-DOS and load games, including 256K Scorpion titles.
+- `fdd_sel` decodes only `addr[2:0]` plus `addr[7]`, so it claims far more than
+  Fuse's `#1F/#3F/#5F/#7F/#FF`. The reference writes `#00F7` once (`PC=#5C95`)
+  and reads `#00F7` once - both with the interface paged out, so neither bites
+  today, but `OUT (#F7),#00` would assert `fdd_reset` if it ever happened while
+  TR-DOS was paged in.
+- `page_write` for the Scorpion is `~A15 & ~A1` with no A14 term, so it is wider
+  than Fuse's `0xc002/0x4000`. No port in the reference trace exercises the
+  difference (verified with `ZZ_MUT=16`, zero hits).
 
 ## 7. Debug facilities
 
@@ -240,7 +240,17 @@ Two OSD-gated aids, both off by default and inert unless selected:
   touches (confirmed by disassembling pages 0 and 2).
 
 `tools/make_dbgread_z80.py` and `tools/make_bank_test_z80.py` build `.z80`
-snapshots that read these back and display them as bit grids.
+snapshots that read these back and display them as bit grids. From the boot
+menu's 128 BASIC, `print in 31472` … `print in 31487` reads them directly, which
+needs no snapshot loading and so can be driven entirely over ssh - see
+`hardware-testing.md`.
+
+**Read the port, never write it.** `#7AF0` has A15=0, A14=1, A1=0, so a write
+lands on `#7FFD` (in Fuse too - its mask is `0xc002`/`0x4000`) and takes the
+machine down with it. `OUT 31472,0` does clear the capture, but only as it
+crashes BASIC; reset afterwards. The capture survives a reset - only that OUT
+clears it - so it is cumulative across runs, and a count or "last value"
+register read after a second boot includes that boot's activity.
 
 ## 8. Other known limitations / stretch goals
 

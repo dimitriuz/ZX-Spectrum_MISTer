@@ -28,6 +28,7 @@ building with Quartus and running on a DE10-Nano — see "Verification path" bel
 | `docs/scorpion-zs256-design.md` | Authoritative Scorpion reference: hardware semantics, decisions, solved bugs |
 | `docs/fuse-harness.md` | Instrumented Fuse 1.7 as a scriptable reference machine + RTL-divergence mutations |
 | `docs/hardware-testing.md` | Driving the DE10-Nano over ssh: keys, screenshots, reading a hung machine |
+| `docs/HANDOFF-savestate.md` | Open work: starting prompt for the savestate (save-side) feature |
 | `sim/` | Retired iverilog harness — reference only, does not compile (see below) |
 
 ## Verification path: hardware

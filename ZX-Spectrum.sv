@@ -57,14 +57,14 @@ localparam CONF_PLUS3 = "(+3) ";
 // 0         1         2         3          4         5         6
 // 01234567890123456789012345678901 23456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-//  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXXXX
+//  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXXXXXXX   XXXX
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"Spectrum;;",
+	"Spectrum;SS3E000000:80000;",
 	"S0,TRDIMGDSKMGT,Load Disk;",
-	"F2,TAPCSWTZX,Load Tape;",
-	"F4,Z80SNA,Load Snapshot;",
+	"FS2,TAPCSWTZX,Load Tape;",
+	"FS4,Z80SNA,Load Snapshot;",
 	"S1,VHD,Load DivMMC;",
 	"-;",
 
@@ -98,6 +98,49 @@ localparam CONF_STR = {
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
 	"P2O[31:30],MMC Version,DivMMC+ESXDOS,DivMMC,ZXMMC;",
 
+	"P3,Savestate;",
+	"P3-;",
+	"P3O[46:45],Slot,1,2,3,4;",
+	"P3R[47],Save State;",
+	"P3R[48],Load State;",
+	"P3-;",
+	// A page-prefixed FS entry DOES arm savestates: menu.cpp's render loop
+	// strips the "P<n>" prefix (p += 2) and then breaks at the selected entry,
+	// so the action block sees a plain "FS5" and sets opensave exactly as it
+	// would for a top-level entry.
+	// WHY THIS LIST AND NOT EVERY EXTENSION THE CORE LOADS (no TZX/CSW/Z80/SNA):
+	// ioctl_index[7:6] carries which extension group was picked, and it is only
+	// TWO BITS - four distinguishable groups per entry - and it is a LIVE,
+	// SHARED signal, not something private to this entry. It also drives
+	// .layout(ioctl_index[7:6] == 1), the WD1793 disk layout (:1544), and
+	// .tape_mode(ioctl_index[7:6]), smart_tape's TAP/CSW/TZX mode (:1620).
+	// So the list must stay byte-identical here: its first four 3-char groups
+	// (TRD/IMG/DSK/MGT) match the S0 disk entry's order above, which is what
+	// makes a Target pick of those four MEAN THE SAME THING to the layout
+	// decode. TAP is the fifth group, so it wraps back to [7:6] == 0 (the same
+	// code as TRD) and stays harmless. A sixth group would alias onto 1 (MGT)
+	// and a seventh onto 2 (the +3 DSK decode), so a .tzx Target would silently
+	// re-interpret a mounted disk.
+	//
+	// KNOWN, ACCEPTED CAVEAT: ioctl_index PERSISTS after the transfer ends, and
+	// this entry's bytes are discarded but its index is not. So picking a
+	// Target AFTER mounting a disk or loading a tape does disturb those two
+	// consumers: a .tap Target leaves .layout on TRD (breaking an MGT disk) and
+	// leaves tape_mode on TAP (breaking a loaded .tzx). It needs that specific
+	// order - Target picked after the file it names - and it is untested.
+	// The proper fix, deliberately NOT taken here: latch the extension group
+	// from real file selections only (a non-Target ioctl_download, or an
+	// img_mounted[0] edge - an S0 mount sets ioctl_index without any download,
+	// so latching on downloads alone would regress disk layout) and feed the
+	// latch to .layout and .tape_mode instead of the live signal. That would
+	// remove the side effect entirely AND free the list to name every
+	// extension. It touches paths shared by all machines, so it was left for a
+	// follow-up rather than bolted onto this feature. The other three
+	// [7:6] consumers are already safe: fdd_ready/plusd_en/plus3_fdd_ready
+	// sample only on an img_mounted[0] edge (:1472), and snap_sna only matters
+	// while a snapshot is actually downloading.
+	"P3FS5,TRDIMGDSKMGTTAP,Savestate Target;",
+
 	"-;",
 	"O[37:36],Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
 	"O[19:17],Joystick,Kempston,Sinclair I,Sinclair II,Sinclair I+II,Cursor;",
@@ -108,6 +151,9 @@ localparam CONF_STR = {
 	"-;",
 	"R[0],Reset & Apply;",
 	"J,Fire 1,Fire 2;",
+	// Order must match the INFO_* localparams in rtl/savestate.sv exactly - the
+	// HPS shows the info-th string from this list.
+	"I,State saved,State loaded,Slot is empty,No savestate on this machine,Savestates not armed,Savestate timed out,Slot 1 selected,Slot 2 selected,Slot 3 selected,Slot 4 selected;",
 	"V,v",`BUILD_DATE
 };
 
@@ -196,6 +242,61 @@ always @(posedge clk_sys) begin
 	end
 end
 
+// Savestate triggers: RIGHT Shift + F1 / F2. mod[0] is set only by scancode
+// 8'h59 (rtl/keyboard.sv:183); left shift is the separate `left_shift` wire
+// and never enters `mod`, so left Shift+F1 does nothing here. That modifier
+// space was free: Alt+F1-F6 is machine select, Ctrl/Alt+F11 are the reset
+// variants, plain F4-F9 are speed and pause, and F11 alone is the Scorpion
+// Shadow Monitor.
+wire [1:0] ss_slot = status[46:45];
+reg        ss_save_req;
+reg        ss_load_req;
+// Right Shift + F3 cycles the slot. The slot LIVES in status[46:45] (the OSD
+// option), so the hotkey must write it back through hps_io's status_set /
+// status_in - the same mechanism speed_set/arch_set/snap_hwset use - or the
+// OSD and the hotkey end up disagreeing about which slot is selected.
+reg        ss_slot_set;
+reg  [1:0] ss_slot_req;
+
+always @(posedge clk_sys) begin
+	reg old_save_btn, old_load_btn;
+	reg old_f1, old_f2, old_f3;
+
+	ss_save_req <= 0;
+	ss_load_req <= 0;
+	ss_slot_set <= 0;
+
+	old_save_btn <= status[47];
+	old_load_btn <= status[48];
+	old_f1 <= Fn[1];
+	old_f2 <= Fn[2];
+	old_f3 <= Fn[3];
+
+	// Never act on a save/load trigger while an hps_io download is in flight.
+	// A file picked from the OSD mid-save drives the same ram_addr/ram_we
+	// path savestate is using, and ram_we = ioctl_wr unconditionally during a
+	// download - so its bytes would be written at ss_ram_addr. Selecting a
+	// slot below is only a menu change, so it is deliberately not gated.
+	if (!ioctl_download) begin
+		if (~old_save_btn & status[47]) ss_save_req <= 1;
+		if (~old_load_btn & status[48]) ss_load_req <= 1;
+
+		if (mod == 1) begin
+			if (~old_f1 & Fn[1]) ss_save_req <= 1;
+			if (~old_f2 & Fn[2]) ss_load_req <= 1;
+		end
+	end
+
+	// Plain F3 is smart_tape's "next" control, gated `& !mod` (:1594), so
+	// mod == 1 is free here as well. Plain 1->2->3->4->1 cycling. The
+	// on-screen message is emitted by rtl/savestate.sv, not here, so
+	// info_req/info keeps exactly one driver.
+	if ((mod == 1) && (~old_f3 & Fn[3])) begin
+		ss_slot_set <= 1;
+		ss_slot_req <= ss_slot + 2'd1;
+	end
+end
+
 reg [4:0] turbo = 5'b11111;
 always @(posedge clk_sys) begin
 	reg [1:0] timeout;
@@ -280,8 +381,12 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(2)) hps_io
 	.new_vmode(new_vmode),
 	.status(status),
 	.status_menumask({|status[9:8],en1080p,|vcrop,~need_apply}),
-	.status_set(speed_set|arch_set|snap_hwset),
-	.status_in({status[63:25], speed_set ? speed_req : 3'b000, status[21:13], arch_set ? arch : snap_hwset ? snap_hw : status[12:8], status[7:0]}),
+	.status_set(speed_set|arch_set|snap_hwset|ss_slot_set),
+	// 17 + 2 + 20 + 3 + 9 + 5 + 8 = 64. The savestate slot is a normal OSD
+	// option (status[46:45]), so the Shift+F3 hotkey has to write it back the
+	// same way speed_set/arch_set/snap_hwset do - hence the split of what used
+	// to be one status[63:25] field.
+	.status_in({status[63:47], ss_slot_set ? ss_slot_req : status[46:45], status[44:25], speed_set ? speed_req : 3'b000, status[21:13], arch_set ? arch : snap_hwset ? snap_hw : status[12:8], status[7:0]}),
 
 	.sd_lba(sd_lba),
 	.sd_rd(sd_rd),
@@ -301,7 +406,10 @@ hps_io #(.CONF_STR(CONF_STR), .VDNUM(2)) hps_io
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(ioctl_wait),
-	
+
+	.info_req(ss_info_req),
+	.info(ss_info),
+
 	.gamma_bus(gamma_bus)
 );
 
@@ -324,12 +432,69 @@ wire        nWR;
 wire        nRFSH;
 wire        nBUSACK;
 wire        nINT;
-wire        nBUSRQ = ~ioctl_download;
+// Savestate (rtl/savestate.sv). Declared here because nBUSRQ below consumes
+// ss_busy and ss_loading; the instance itself lives next to snap_loader.
+wire        ss_busy, ss_loading;
+wire [24:0] ss_ram_addr;
+wire        ss_ram_rd;
+wire [27:0] ss_ddr_addr;
+wire  [7:0] ss_ddr_din, ss_ddr_dout;
+wire        ss_ddr_we, ss_ddr_rd, ss_ddr_ready;
+wire [24:0] ss_ld_addr;
+wire  [7:0] ss_ld_data;
+wire        ss_ld_wr;
+wire        ss_info_req;
+wire  [7:0] ss_info;
+// Only steal the SDRAM once the CPU has actually released the bus. Asserting
+// this on ss_busy alone cuts the CPU's own memory access while ST_S_BUS is
+// still waiting for that CPU to grant the bus - a deadlock that bites during
+// fast tape load, where cpu_en is gated on ram_ready (:250).
+wire        ss_rd = ss_busy & ~nBUSACK;
+wire        snap_wait_out;
+wire        ss_ld_wait = snap_wait_out;
+
+// A savestate save needs the CPU off the bus so cpu_reg is coherent; a savestate
+// load needs it off the bus for the same reason a file download does.
+wire        nBUSRQ = ~(ioctl_download | ss_busy | ss_loading);
 wire        reset  = buttons[1] | status[0] | cold_reset | warm_reset | shdw_reset | Fn[10] | mmc_reset;
 
 wire        cold_reset =((mod[2:1] == 1) & Fn[11]) | init_reset | arch_reset | snap_reset | mmc_reset;
 wire        warm_reset = (mod[2:1] == 2) & Fn[11];
 wire        shdw_reset = (mod[2:1] == 3) & Fn[11] & ~plus3;
+
+// savestate must survive the reset its OWN load provokes: snap_loader asserts
+// snap_reset the moment it starts parsing (rtl/snap_loader.sv:286), and that
+// feeds cold_reset -> reset. Resetting the streamer there kills the load
+// mid-flight: the machine resets, nothing is restored, and no info message is
+// ever sent. That one is real and hardware-confirmed, so snap_reset - and only
+// snap_reset - is excluded.
+//
+// arch_reset used to be excluded too, on the belief that a cross-machine load
+// provokes it via hwset. That belief was wrong in the general case: arch_reset
+// (:1645) is asserted only from the local `setwait` latch, and `setwait` is set
+// only by Alt+F1-F6. A cross-machine load's own machine change goes through
+// hps_io's status_set and snap_loader's hw_ack compare, and does not by itself
+// touch arch_reset. The exclusion bought nothing and cost Alt+F1-F6 as a
+// recovery gesture for a hung save, so arch_reset is included now.
+//
+// One corner case is knowingly accepted rather than engineered around, because
+// closing it would change the ordinary snapshot path that machines 0-4 share.
+// `setwait` clears only when status[12:8] catches up to `arch` (:1668), so an
+// Alt+Fn the HPS never applied leaves it set indefinitely. A later load whose
+// saved machine happens to EQUAL that pending `arch` then satisfies the latch
+// via snap_hwset, fires arch_reset, and aborts the load. It needs the HPS to
+// have dropped a status write, it affects only the first load after one, and
+// pressing Load again succeeds - `setwait` is clear by then. Suppressing it
+// would mean clearing `setwait` on snap_hwset, which alters what a plain .z80
+// load does to a pending Alt+Fn on every machine, so it is left alone.
+//
+// Every USER-initiated reset must clear this module, or a hung save is
+// unrecoverable. This covers every term of `reset` (buttons[1], status[0],
+// cold_reset = ctrl+F11 | init_reset | arch_reset | snap_reset | mmc_reset,
+// warm_reset, shdw_reset, Fn[10], mmc_reset) except snap_reset.
+wire        ss_mod_reset = buttons[1] | status[0] | ((mod[2:1] == 1) & Fn[11])
+                          | init_reset | arch_reset | mmc_reset | warm_reset
+                          | shdw_reset | Fn[10];
 
 wire        io_wr = ~nIORQ & ~nWR & nM1;
 wire        io_rd = ~nIORQ & ~nRD & nM1;
@@ -420,21 +585,26 @@ always @(posedge clk_sys) load_addr <= ioctl_addr + (ioctl_index[4:0] ? 25'h4000
 reg load;
 always @(posedge clk_sys) load <= (reset | ~nBUSACK) & ~nBUSRQ;
 
+// Index 5 is the "Savestate Target" entry: its only job is to give the HPS a
+// filename to derive the .ss name from. The bytes are discarded.
+wire ss_target_dl = ioctl_download && (ioctl_index[4:0] == 5);
+
 always_comb begin
-	casex({snap_reset, load, tape_req, mmc_ram_en, page_special, addr[15:14]})
-		'b1XXX_X_XX: ram_addr = snap_addr;
-		'b01XX_X_XX: ram_addr = load_addr;
-		'b001X_X_XX: ram_addr = tape_addr;
-		'b0001_X_XX: ram_addr = { 4'b1000, mmc_ram_bank,                                     addr[12:0]};
-		'b0000_0_00: ram_addr = scorp ? (scorp_1ffd[0] ? { 1'b0, 4'd0, addr[13:0] } : { 3'b110, page_rom, addr[13:0] })
+	casex({ss_rd, snap_reset, load, tape_req, mmc_ram_en, page_special, addr[15:14]})
+		'b1XXXX_X_XX: ram_addr = ss_ram_addr;
+		'b01XXX_X_XX: ram_addr = snap_addr;
+		'b001XX_X_XX: ram_addr = load_addr;
+		'b0001X_X_XX: ram_addr = tape_addr;
+		'b00001_X_XX: ram_addr = { 4'b1000, mmc_ram_bank,                                     addr[12:0]};
+		'b00000_0_00: ram_addr = scorp ? (scorp_1ffd[0] ? { 1'b0, 4'd0, addr[13:0] } : { 3'b110, page_rom, addr[13:0] })
 		                              : { 3'b101, page_rom, addr[13:0] }; //ROM (scorp: RAM bank 0 / Scorpion ROM window)
-		'b0000_0_01: ram_addr = scorp ? { 1'b0, 4'd5, addr[13:0] } : { 4'b0000, 3'd5, addr[13:0] }; // #4000: bank 5 fixed (screen)
-		'b0000_0_10: ram_addr = scorp ? { 1'b0, 4'd2, addr[13:0] } : { 4'b0000, 3'd2, addr[13:0] }; // #8000: bank 2 fixed
-		'b0000_0_11: ram_addr = { 1'b0, (scorp ? {1'b0, scorp_page} : page_ram), addr[13:0]};          // #C000: paged bank
-		'b0000_1_00: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b00, addr[13:0]}; //Special page modes
-		'b0000_1_01: ram_addr = { 4'b0000, |page_reg_plus3[2:1], &page_reg_plus3[2:1], 1'b1, addr[13:0]};
-		'b0000_1_10: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b10, addr[13:0]};
-		'b0000_1_11: ram_addr = { 4'b0000, ~page_reg_plus3[2] & page_reg_plus3[1],    2'b11, addr[13:0]};
+		'b00000_0_01: ram_addr = scorp ? { 1'b0, 4'd5, addr[13:0] } : { 4'b0000, 3'd5, addr[13:0] }; // #4000: bank 5 fixed (screen)
+		'b00000_0_10: ram_addr = scorp ? { 1'b0, 4'd2, addr[13:0] } : { 4'b0000, 3'd2, addr[13:0] }; // #8000: bank 2 fixed
+		'b00000_0_11: ram_addr = { 1'b0, (scorp ? {1'b0, scorp_page} : page_ram), addr[13:0]};          // #C000: paged bank
+		'b00000_1_00: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b00, addr[13:0]}; //Special page modes
+		'b00000_1_01: ram_addr = { 4'b0000, |page_reg_plus3[2:1], &page_reg_plus3[2:1], 1'b1, addr[13:0]};
+		'b00000_1_10: ram_addr = { 4'b0000, |page_reg_plus3[2:1],                      2'b10, addr[13:0]};
+		'b00000_1_11: ram_addr = { 4'b0000, ~page_reg_plus3[2] & page_reg_plus3[1],    2'b11, addr[13:0]};
 	endcase
 
 	casex({snap_reset, load, tape_req})
@@ -444,15 +614,16 @@ always_comb begin
 		'b000: ram_din = cpu_dout;
 	endcase
 
-	casex({load, tape_req})
-		'b1X: ram_rd = 0;
-		'b01: ram_rd = ~nMREQ;
-		'b00: ram_rd = ~nMREQ & ~nRD;
+	casex({ss_rd, load, tape_req})
+		'b1XX: ram_rd = ss_ram_rd;
+		'b01X: ram_rd = 0;
+		'b001: ram_rd = ~nMREQ;
+		'b000: ram_rd = ~nMREQ & ~nRD;
 	endcase
 
 	casex({snap_reset, load, tape_req})
 		'b1XX: ram_we = snap_wr;
-		'b01X: ram_we = ioctl_wr;
+		'b01X: ram_we = ioctl_wr & ~ss_target_dl;   // index 5 arms savestates only
 		'b001: ram_we = 0;
 		'b000: ram_we = (mmc_ram_en | page_special | addr[15] | addr[14] | (~scorp & (plusd_mem | mf128_mem) & addr[13]) | (scorp & scorp_1ffd[0] & ~addr[14] & ~addr[15])) & ~nMREQ & ~nWR;
 	endcase
@@ -499,6 +670,49 @@ reg  [7:0] page_reg_p1024;
 wire       page_disable = zx48 | (~p1024 & ~scorp & page_reg[5]) | (p1024 & page_reg_p1024[2] & page_reg[5]);
 wire       page_scr     = page_reg[3];
 wire [5:0] page_ram     = {page_128k, page_reg[2:0]};
+
+// .z80 hardware mode and RAM shape per machine. A .z80 page block addresses
+// 16 banks (snap_loader.sv:552), so the two 1024K machines - 64 banks - cannot
+// be expressed and are refused rather than silently truncated.
+reg  [7:0] ss_hw_mode;
+reg  [5:0] ss_num_banks;
+reg        ss_banks48;
+reg        ss_supported;
+
+always_comb begin
+	case (status[12:10])
+		3'd0: begin  // Spectrum 128K/+2 (hardware mode 9 when running Pentagon timings)
+			ss_hw_mode   = (status[9:8] == 2'd2) ? 8'd9 : 8'd4;
+			ss_num_banks = 6'd8;
+			ss_banks48   = 1'b0;
+			ss_supported = 1'b1;
+		end
+		3'd3: begin  // Spectrum 48K
+			ss_hw_mode   = 8'd0;
+			ss_num_banks = 6'd3;
+			ss_banks48   = 1'b1;
+			ss_supported = 1'b1;
+		end
+		3'd4: begin  // Spectrum +2A/+3
+			ss_hw_mode   = 8'd7;
+			ss_num_banks = 6'd8;
+			ss_banks48   = 1'b0;
+			ss_supported = 1'b1;
+		end
+		3'd5: begin  // Scorpion ZS-256
+			ss_hw_mode   = 8'd10;
+			ss_num_banks = 6'd16;
+			ss_banks48   = 1'b0;
+			ss_supported = 1'b1;
+		end
+		default: begin  // 1 = Pentagon 1024K, 2 = Profi 1024K
+			ss_hw_mode   = 8'd0;
+			ss_num_banks = 6'd0;
+			ss_banks48   = 1'b0;
+			ss_supported = 1'b0;
+		end
+	endcase
+end
 wire       page_write   = ~addr[15] & ~addr[1] & (addr[14] | ~plus3) & ~page_disable; //7ffd
 wire       page_write_plus3 = ~addr[1] & addr[12] & ~addr[13] & ~addr[14] & ~addr[15] & plus3 & ~page_disable; //1ffd
 wire       page_special = page_reg_plus3[0];
@@ -639,6 +853,74 @@ reg         psg_active;
 
 wire        aud_reset = reset | psg_reset;
 
+// Savestate AY restore: after a load completes, `savestate` replays the
+// register file it captured off its own outgoing stream (see ST_L_WR in
+// rtl/savestate.sv) by driving this mux instead of the CPU's own
+// psg_we/addr[14]/cpu_dout. ss_ay_active is low outside a restore, so the
+// mux is inert then and the CPU's own signals pass straight through.
+wire        ss_ay_active, ss_ay_bdir, ss_ay_bc;
+wire  [7:0] ss_ay_data;
+wire        psg_we_mux = ss_ay_active ? ss_ay_bdir : psg_we;
+wire        psg_bc_mux = ss_ay_active ? ss_ay_bc   : addr[14];
+wire  [7:0] psg_di_mux = ss_ay_active ? ss_ay_data : cpu_dout;
+
+// Savestate: shadow the AY register file (save side) by snooping the same
+// write port turbosound itself listens on - real CPU writes AND the replay
+// mux above both pass through psg_we_mux/psg_bc_mux/psg_di_mux, so the
+// shadow always matches what turbosound actually holds (including right
+// after a restore, so a chained save afterwards is still correct) with no
+// changes to turbosound.sv/ym2149.sv. BC=1 (#FFFD) latches a register
+// select; BC=0 (#BFFD) writes the selected register.
+// Reset values MUST match the real chip: rtl/ym2149.sv:76-81 resets ymreg[7]
+// to 0xFF and ymreg[13] to 0x08 (continuous sawtooth envelope), everything
+// else to 0. The whole point of this shadow is that it never holds a value the
+// chip does not have, and an all-zero reset broke exactly that for regs 7/13.
+// Packing is reg0 at bits [7:0], so reg7 is [63:56] and reg13 is [111:104].
+// regs 15..14      reg 13   regs 12..8  reg 7    regs 6..0
+localparam [127:0] AY_SHADOW_RST = {16'd0, 8'h08, 40'd0, 8'hFF, 56'd0};
+reg [127:0] ay_shadow  = AY_SHADOW_RST;
+reg   [3:0] ay_sel_reg = 4'd0;
+// Mirrors turbosound's own ym_acc (rtl/turbosound.sv:99): a #BFFD data write
+// only reaches the AY register file if the preceding #FFFD actually selected
+// an AY register. It resets to 0 there too, so a data write with no preceding
+// select reaches no register at all - and must reach no shadow entry either.
+reg         ay_acc = 0;
+reg         psg_we_mux_d;
+always @(posedge clk_sys) begin
+	psg_we_mux_d <= psg_we_mux;
+	// Track turbosound's own RESET (aud_reset) so the shadow can never hold
+	// stale post-reset register values: without this, a machine reset zeros
+	// the real chip while the shadow keeps its pre-reset contents, and a
+	// savestate taken right after would capture AY state the chip does not
+	// actually have. Cleared here rather than left to decay via writes,
+	// since nothing guarantees a write to every register follows a reset.
+	// This also fires during a savestate load's own reset (aud_reset tracks
+	// snap_reset via `reset`), which is fine: the restored values live in
+	// savestate.sv's ay_regs_cap/ay_sel_cap, captured off the load stream
+	// independently of this shadow, and get replayed into turbosound (and
+	// so back into this shadow, through the same muxed write port) only
+	// after aud_reset releases - see ST_L_AY_WAIT in rtl/savestate.sv.
+	if (aud_reset) begin
+		ay_shadow  <= AY_SHADOW_RST;
+		ay_sel_reg <= 4'd0;
+		ay_acc     <= 0;
+	end
+	else if (psg_we_mux & ~psg_we_mux_d) begin
+		// Not every #FFFD write is an AY register selection, and recording the
+		// ones that are not corrupts the shadow. rtl/turbosound.sv:88-101
+		// treats DI[7:3] == 5'b11111 as a Turbosound CHIP select and any
+		// DI[7:4] != 0 as an FM register select; neither reaches ym2149's AY
+		// register file. Mirror turbosound's own !DI[7:4] guard, and mirror
+		// its ym_acc so the following #BFFD data byte is only shadowed when
+		// turbosound would actually have written it to the AY.
+		if (psg_bc_mux) begin
+			ay_acc <= !psg_di_mux[7:4];
+			if (!psg_di_mux[7:4]) ay_sel_reg <= psg_di_mux[3:0];
+		end
+		else if (ay_acc) ay_shadow[8*ay_sel_reg +: 8] <= psg_di_mux;
+	end
+end
+
 reg  ce_ym;  //3.5MHz
 always @(posedge clk_aud) begin
 	reg [3:0] counter = 0;
@@ -658,9 +940,9 @@ turbosound turbosound
 	.RESET(aud_reset),
 	.CLK(clk_aud),
 	.CE(ce_ym),
-	.BDIR(psg_we),
-	.BC(addr[14]),
-	.DI(cpu_dout),
+	.BDIR(psg_we_mux),
+	.BC(psg_bc_mux),
+	.DI(psg_di_mux),
 	.DO(psg_dout),
 
 	.ENABLE(~status[39]),
@@ -745,16 +1027,82 @@ always_comb begin
 end
 
 assign DDRAM_CLK = clk_aud;
+
+// General Sound keeps strict priority; savestate takes leftover slots.
+wire [27:0] ddr_m_addr;
+wire  [7:0] ddr_m_din, ddr_m_dout;
+wire        ddr_m_we, ddr_m_rd, ddr_m_ready;
+
+// savestate runs on clk_sys (112 MHz), the arbiter and ddram on clk_aud
+// (56 MHz), and savestate pulses we/rd for exactly one clk_sys cycle - about
+// half of which would never be sampled by clk_aud, silently dropping payload
+// bytes. ddr_cdc is a four-phase request/acknowledge bridge that makes every
+// transaction happen exactly once for any ratio and any phase, and holds
+// savestate's `ready` low until the transaction has actually completed. It
+// also turns ddram_arb's one-cycle b_ready completion pulse back into the
+// level savestate polls. See rtl/ddr_cdc.sv. General Sound is not involved:
+// it stays on port A, in its own clk_aud domain, untouched.
+wire [27:0] ss_aud_addr;
+wire  [7:0] ss_aud_din, ss_aud_dout;
+wire        ss_aud_we, ss_aud_rd, ss_aud_ready;
+
+ddr_cdc ddr_cdc
+(
+	.clk_in(clk_sys),
+	.addr(ss_ddr_addr),
+	.din(ss_ddr_din),
+	.dout(ss_ddr_dout),
+	.we(ss_ddr_we),
+	.rd(ss_ddr_rd),
+	.ready(ss_ddr_ready),
+
+	.clk_out(clk_aud),
+	.m_addr(ss_aud_addr),
+	.m_din(ss_aud_din),
+	.m_dout(ss_aud_dout),
+	.m_we(ss_aud_we),
+	.m_rd(ss_aud_rd),
+	.m_ready(ss_aud_ready)
+);
+
+ddram_arb ddram_arb
+(
+	.clk(clk_aud),
+
+	.DDRAM_BUSY(DDRAM_BUSY),
+
+	.a_addr(gs_mem_addr),
+	.a_din(gs_mem_din),
+	.a_dout(gs_mem_dout),
+	.a_we(gs_mem_wr),
+	.a_rd(gs_mem_rd),
+	.a_ready(gs_mem_ready),
+
+	.b_addr(ss_aud_addr),
+	.b_din(ss_aud_din),
+	.b_dout(ss_aud_dout),
+	.b_we(ss_aud_we),
+	.b_rd(ss_aud_rd),
+	.b_ready(ss_aud_ready),
+
+	.m_addr(ddr_m_addr),
+	.m_din(ddr_m_din),
+	.m_dout(ddr_m_dout),
+	.m_we(ddr_m_we),
+	.m_rd(ddr_m_rd),
+	.m_ready(ddr_m_ready)
+);
+
 ddram ddram
 (
 	.*,
 
-	.addr(gs_mem_addr),
-	.dout(gs_mem_dout),
-	.din(gs_mem_din),
-	.we(gs_mem_wr),
-	.rd(gs_mem_rd),
-	.ready(gs_mem_ready)
+	.addr(ddr_m_addr),
+	.dout(ddr_m_dout),
+	.din(ddr_m_din),
+	.we(ddr_m_we),
+	.rd(ddr_m_rd),
+	.ready(ddr_m_ready)
 );
 
 wire gs_sel = (addr[7:0] ==? 'b1011?011) & ~&status[21:20];
@@ -1378,12 +1726,14 @@ snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128, ARCH_SCORP) snap_loade
 (
 	.clk_sys(clk_sys),
 
-	.ioctl_download(ioctl_download && ioctl_index[4:0] == 4),
-	.ioctl_addr(ioctl_addr),
-	.ioctl_data(ioctl_dout),
-	.ioctl_wr(ioctl_wr),
-	.ioctl_wait(ioctl_wait),
-	.snap_sna(|ioctl_index[7:6]),
+	// A savestate load is presented here as if it were an ioctl download.
+	// snap_loader is unmodified and cannot tell the difference.
+	.ioctl_download(ss_loading ? 1'b1 : (ioctl_download && ioctl_index[4:0] == 4)),
+	.ioctl_addr(ss_loading ? ss_ld_addr : ioctl_addr),
+	.ioctl_data(ss_loading ? ss_ld_data : ioctl_dout),
+	.ioctl_wr(ss_loading ? ss_ld_wr : ioctl_wr),
+	.ioctl_wait(snap_wait_out),
+	.snap_sna(ss_loading ? 1'b0 : (|ioctl_index[7:6])),
 
 	.ram_ready(ram_ready),
 
@@ -1402,6 +1752,73 @@ snap_loader #(ARCH_ZX48, ARCH_ZX128, ARCH_ZX3, ARCH_P128, ARCH_SCORP) snap_loade
    .border(snap_border),
    .reg_1ffd(snap_1ffd),
    .reg_7ffd(snap_7ffd)
+);
+
+// hps_io must not be stalled by a savestate load - there is no download in flight.
+assign ioctl_wait = ss_loading ? 1'b0 : snap_wait_out;
+
+savestate savestate
+(
+	.clk(clk_sys),
+	// ss_mod_reset, not the general reset and not init_reset (power-on only):
+	// a stuck save/load holds the CPU off the bus (ss_busy/ld_download feed
+	// nBUSRQ), and only a real user-initiated reset must be able to clear
+	// that FSM back to idle. reset itself is excluded because it also carries
+	// snap_reset, which a savestate load provokes on itself mid-stream.
+	// ss_mod_reset covers every other term of reset, arch_reset included - see
+	// its definition above for why excluding arch_reset was a mistake.
+	// savestate.sv's own reset block is scoped to state/ss_busy/ld_download/
+	// ld_wr only - counter and armed_seen are power-on initialisers outside
+	// it, so the slot counter still survives a machine reset. It also resets
+	// ss_writer, which has no other way back to idle from a half-written save.
+	.reset(ss_mod_reset),
+
+	.ss_save_req(ss_save_req),
+	.ss_load_req(ss_load_req),
+	.ss_slot(ss_slot),
+	.ss_slot_chg(ss_slot_set),
+	.ss_slot_new(ss_slot_req),
+	.ss_supported(ss_supported),
+	.ss_busy(ss_busy),
+	.cpu_ack(~nBUSACK),
+
+	.cpu_reg(cpu_reg),
+	.port_7ffd(page_reg),
+	.port_1ffd(scorp ? scorp_1ffd : page_reg_plus3),
+	.border(border_color),
+	.hw_mode(ss_hw_mode),
+	.num_banks(ss_num_banks),
+	.banks48(ss_banks48),
+
+	.ay_shadow(ay_shadow),
+	.ay_sel(ay_sel_reg),
+
+	.ram_addr(ss_ram_addr),
+	.ram_rd(ss_ram_rd),
+	.ram_dout(ram_dout),
+	.ram_ready(ram_ready),
+
+	.ddr_addr(ss_ddr_addr),
+	.ddr_din(ss_ddr_din),
+	.ddr_dout(ss_ddr_dout),
+	.ddr_we(ss_ddr_we),
+	.ddr_rd(ss_ddr_rd),
+	.ddr_ready(ss_ddr_ready),
+
+	.ld_download(ss_loading),
+	.ld_addr(ss_ld_addr),
+	.ld_data(ss_ld_data),
+	.ld_wr(ss_ld_wr),
+	.ld_wait(ss_ld_wait),
+
+	.aud_reset(aud_reset),
+	.ay_replay_active(ss_ay_active),
+	.ay_replay_bdir(ss_ay_bdir),
+	.ay_replay_bc(ss_ay_bc),
+	.ay_replay_data(ss_ay_data),
+
+	.info_req(ss_info_req),
+	.info(ss_info)
 );
 
 endmodule

@@ -14,7 +14,7 @@ Sources: Fuse `machines/scorpion.c` (reference implementation), speccy-bootcamp 
 | Screen bank | `#7FFD` bit 3: 0 → bank 5, 1 → bank 7 (display file always in one of these two) |
 | ROM select at #0000 | `#1FFD` bit 0 → RAM bank 0; else `#1FFD` bit 1 → ROM2 (Shadow Service Monitor); else `#7FFD` bit 4: 0 → ROM0 (BASIC 128), 1 → ROM1 (48K BASIC) |
 | ROM | 64 KB = 4 × 16 KB pages: ROM0 "Scorpion BASIC 128" ("1992-94 Scorpion ZS 256"), ROM1 48K BASIC, ROM2 Shadow Service Monitor (pure code, RU UI), ROM3 TR-DOS 5.03 |
-| Video | Standard ULA-48 timings: 312 lines, 69,888 T-states, INT at T=0, #FF = attribute byte |
+| Video | OSD **Video Timings → Scorpion**. Stock ULA-48 raster: 312 lines x 224T = 69,888 T-states, INT 14,336T before the first paper pixel, #FF = attribute byte. **No contended memory and no I/O contention** (flat 3.5 MHz), and the border colour is latched one 4T slot later than an ULA-48 |
 | Disk | Beta 128 (TR-DOS) **built-in**, always active; ROM3 is the TR-DOS entry ROM |
 | Sound | AY-3-8910/12 at #FFFD/#FFFE (existing path) |
 | Ports | Kempston joystick (#FFFD), standard ULA ports; #FE uses selective decode (A4,A3,A1,A0) — see limitations |
@@ -101,7 +101,31 @@ prefix, so their mapping is bit-for-bit unchanged.
 
 ### rtl/ula.sv
 
-- **No changes.** Video uses ULA-48 timings (mZX=1, m128=0 — select "Video Timings → ULA-48" or leave default for this machine; Scorpion video is stock 48K). Contention (`contendAddr`, line 258) keeps the standard #4000–#7FFF window: in Scorpion mode this matches real behavior when the screen bank (5/7) is paged into that window, and adds a conservative spurious wait otherwise — acceptable for v1.
+- **New `scorp_tim` input; contention disabled when it is set.** Everything else is
+  unchanged: the Scorpion ULA *is* the stock ULA-48 raster (224T lines, 312-line
+  69,888T frame, INT 14,336T before the first paper pixel), so the existing
+  mZX/~m128 geometry is already correct and needs no new counters.
+- The one real difference is contention. A Scorpion has **no contended memory and
+  no I/O contention** — Fuse's `machines/scorpion.c` sets both `ram.contend_delay`
+  and `ram.contend_delay_no_mreq` to `spectrum_contend_delay_none`, and Unreal's
+  `PRESET.SCORPION` has none either. Our `contendAddr` covers #4000–#7FFF, which on
+  a Scorpion is *permanently* bank 5, so every access there — and every `OUT` to a
+  ULA port — was picking up 48K wait states. Timing-critical Scorpion code budgets
+  exact T-state counts (`scorp_green.tap` renders its picture from unrolled
+  `OUT (C),r` streams of exactly 18 OUTs + 2 NOPs = 224T per raster line), so any
+  wait state destroys it.
+- **Border colour is latched one 4T slot late** (`border_d`). The ULA loads `AttrOut`
+  every 4T; taking `border_color` at that moment displays a border write 4T early,
+  because on real hardware the colour for a slot is latched with the attribute fetch
+  for the cell being shown. Measured against Fuse's Scorpion running
+  `scorp_green.tap`, **every** border transition landed exactly −8 px (−4T) while the
+  paper bitmap matched pixel-for-pixel, and a blue `OUT` that should stay hidden
+  behind the paper leaked into the last 8 px of the left border. `border_d` restores
+  the slot. Same 4T border granularity as Fuse and as Unreal's `4TBorder=1`.
+- Top level (`ZX-Spectrum.sv`): `scorp_tim` is simply `status[9:8] == 3`, i.e. the
+  fourth entry of **Video Timings** (`ULA-48, ULA-128, Pentagon, Scorpion`), which also
+  selects the ULA-48 raster in the `mZX`/`m128` decode. `ARCH_SCORP` is `5'b101_11`, so
+  a Scorpion snapshot selects both the machine and its timing.
 
 ### boot.rom
 
@@ -259,5 +283,5 @@ register read after a second boot includes that boot's activity.
 - **MNI flag port**: real HW likely exposes an MNI-pressed flag at some port that ROM0's NMI handler reads; we bypass that by latching the shadow page directly on F11. If ROM0's handler misbehaves without the flag, revisit (may need a fake flag byte at a TBD address).
 - **DivMMC / esxdos** is disabled in Scorpion mode (no such hardware on a real Scorpion; the built-in Beta 128 covers disk access).
 - **Turbo+ / GMX** variants: out of scope.
-- **Contention approximation**: see §4 ula.sv note.
+- **Contention**: removed for Scorpion (see §4 `rtl/ula.sv`). Interrupt length is still the ULA-48 32T; Fuse's `timings_frame_scorpion` says 36T. Not yet shown to matter — revisit if something depends on a >32T `nINT` window.
 - **Untested on hardware at time of writing** — §5 has not been executed yet.

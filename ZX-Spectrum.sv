@@ -46,7 +46,7 @@ localparam ARCH_ZX3   = 5'b100_01; // ZX 128 +3
 localparam ARCH_P48   = 5'b011_10; // Pentagon 48
 localparam ARCH_P128  = 5'b000_10; // Pentagon 128
 localparam ARCH_P1024 = 5'b001_10; // Pentagon 1024
-localparam ARCH_SCORP = 5'b101_00; // Scorpion ZS-256
+localparam ARCH_SCORP = 5'b101_11; // Scorpion ZS-256
 
 localparam CONF_BDI   = "(BDI)";
 localparam CONF_PLUSD = "(+D) ";
@@ -78,7 +78,7 @@ localparam CONF_STR = {
 	"h2d1P1O[29:28],Vertical Crop,No,270,216;",
 	"P1O[27:26],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"P1-;",
-	"P1O[21:20,General Sound,512KB,1MB,2MB,Disabled;",
+	"P1O[21:20],General Sound,512KB,1MB,2MB,Disabled;",
 	"P1O[3:2],Stereo Mix,none,25%,50%,100%;",
 	"P1-;",
 	"P1O[39],PSG/FM,Enabled,Disabled;",
@@ -92,7 +92,7 @@ localparam CONF_STR = {
 	"P2O[14],ULA+,Enabled,Disabled;",
 	"D3P2OP,Snow Bug,Disabled,Enabled;",
 	"P2-;",
-	"P2O[9:8],Video Timings,ULA-48,ULA-128,Pentagon;",
+	"P2O[9:8],Video Timings,ULA-48,ULA-128,Pentagon,Scorpion;",
 	"P2O[12:10],Memory,Spectrum 128K/+2,Pentagon 1024K,Profi 1024K,Spectrum 48K,Spectrum +2A/+3,Scorpion ZS-256;",
 	"P2-;",
 	"P2O[33:32],MMC Mode,Auto(VHD),SD Card 14MHz,SD Card 28MHz;",
@@ -874,12 +874,21 @@ wire  [7:0] port_ff;
 wire        ulap_sel;
 wire  [7:0] ulap_dout;
 
+// Video Timings = Scorpion. The Scorpion ULA runs the stock ULA-48 raster - 224T
+// lines, a 312-line 69,888T frame, the interrupt 14,336T before the first paper
+// pixel (Fuse's timings_frame_scorpion, Unreal's PRESET.SCORPION). It differs from
+// an ULA-48 only in having no contention and in latching the border colour one 4T
+// slot later; both of those hang off scorp_tim in rtl/ula.sv.
+reg scorp_tim;
+always @(posedge clk_sys) scorp_tim <= (status[9:8] == 3);
+
 reg mZX, m128;
 always @(posedge clk_sys) begin
 	case(status[9:8])
-		      0: {mZX, m128} <= 2'b10;
-		      1: {mZX, m128} <= 2'b11;
-		default: {mZX, m128} <= 2'b00;
+		      0: {mZX, m128} <= 2'b10; // ULA-48
+		      1: {mZX, m128} <= 2'b11; // ULA-128
+		      3: {mZX, m128} <= 2'b10; // Scorpion - ULA-48 raster
+		default: {mZX, m128} <= 2'b00; // Pentagon
 	endcase
 end
 

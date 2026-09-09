@@ -164,10 +164,9 @@ DivMMC/esxdos is disabled in this mode (a real Scorpion has no DivMMC; the built
 
 Set **Video Timings → Scorpion** alongside it (snapshots select it automatically). The
 Scorpion raster is the stock ULA-48 one — 224T lines, a 312-line 69,888T frame, the
-interrupt 14,336T before the first paper pixel — and differs from an ULA-48 only in two
-things, both of which timing-critical demos depend on: there is **no contention** (memory
-or I/O; the CPU keeps a flat 3.5 MHz), and the border colour is latched one 4T slot later,
-so a `OUT (C),r` border stream lands where a real Scorpion puts it. Leaving Video Timings
+interrupt 14,336T before the first paper pixel — and differs from an ULA-48 in one thing
+that timing-critical software depends on: there is **no contention**, neither memory nor
+I/O, so the CPU keeps a flat 3.5 MHz whatever the raster is doing. Leaving Video Timings
 on ULA-128 or Pentagon gives a Scorpion the wrong frame length and interrupt phase.
 
 All five boot-menu entries work, as do `RANDOMIZE USR 15616` from 128 BASIC and

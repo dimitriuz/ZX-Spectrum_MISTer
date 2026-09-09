@@ -14,7 +14,7 @@ Sources: Fuse `machines/scorpion.c` (reference implementation), speccy-bootcamp 
 | Screen bank | `#7FFD` bit 3: 0 → bank 5, 1 → bank 7 (display file always in one of these two) |
 | ROM select at #0000 | `#1FFD` bit 0 → RAM bank 0; else `#1FFD` bit 1 → ROM2 (Shadow Service Monitor); else `#7FFD` bit 4: 0 → ROM0 (BASIC 128), 1 → ROM1 (48K BASIC) |
 | ROM | 64 KB = 4 × 16 KB pages: ROM0 "Scorpion BASIC 128" ("1992-94 Scorpion ZS 256"), ROM1 48K BASIC, ROM2 Shadow Service Monitor (pure code, RU UI), ROM3 TR-DOS 5.03 |
-| Video | OSD **Video Timings → Scorpion**. Stock ULA-48 raster: 312 lines x 224T = 69,888 T-states, INT 14,336T before the first paper pixel, #FF = attribute byte. **No contended memory and no I/O contention** (flat 3.5 MHz), and the border colour is latched one 4T slot later than an ULA-48 |
+| Video | OSD **Video Timings → Scorpion**. Stock ULA-48 raster: 312 lines x 224T = 69,888 T-states, INT 14,336T before the first paper pixel, #FF = attribute byte. **No contended memory and no I/O contention** (flat 3.5 MHz) |
 | Disk | Beta 128 (TR-DOS) **built-in**, always active; ROM3 is the TR-DOS entry ROM |
 | Sound | AY-3-8910/12 at #FFFD/#FFFE (existing path) |
 | Ports | Kempston joystick (#FFFD), standard ULA ports; #FE uses selective decode (A4,A3,A1,A0) — see limitations |
@@ -114,14 +114,7 @@ prefix, so their mapping is bit-for-bit unchanged.
   exact T-state counts (`scorp_green.tap` renders its picture from unrolled
   `OUT (C),r` streams of exactly 18 OUTs + 2 NOPs = 224T per raster line), so any
   wait state destroys it.
-- **Border colour is latched one 4T slot late** (`border_d`). The ULA loads `AttrOut`
-  every 4T; taking `border_color` at that moment displays a border write 4T early,
-  because on real hardware the colour for a slot is latched with the attribute fetch
-  for the cell being shown. Measured against Fuse's Scorpion running
-  `scorp_green.tap`, **every** border transition landed exactly −8 px (−4T) while the
-  paper bitmap matched pixel-for-pixel, and a blue `OUT` that should stay hidden
-  behind the paper leaked into the last 8 px of the left border. `border_d` restores
-  the slot. Same 4T border granularity as Fuse and as Unreal's `4TBorder=1`.
+- **The border latch phase was investigated and deliberately left alone** — §9.
 - Top level (`ZX-Spectrum.sv`): `scorp_tim` is simply `status[9:8] == 3`, i.e. the
   fourth entry of **Video Timings** (`ULA-48, ULA-128, Pentagon, Scorpion`), which also
   selects the ULA-48 raster in the `mZX`/`m128` decode. `ARCH_SCORP` is `5'b101_11`, so
@@ -284,4 +277,31 @@ register read after a second boot includes that boot's activity.
 - **DivMMC / esxdos** is disabled in Scorpion mode (no such hardware on a real Scorpion; the built-in Beta 128 covers disk access).
 - **Turbo+ / GMX** variants: out of scope.
 - **Contention**: removed for Scorpion (see §4 `rtl/ula.sv`). Interrupt length is still the ULA-48 32T; Fuse's `timings_frame_scorpion` says 36T. Not yet shown to matter — revisit if something depends on a >32T `nINT` window.
-- **Untested on hardware at time of writing** — §5 has not been executed yet.
+
+## 9. The border-phase dead end (do not re-derive this)
+
+`scorp_green.tap` paints its picture entirely from unrolled `OUT (C),r` streams that
+budget exactly 224T per raster line (18 OUTs + 2 NOPs). It is an excellent contention
+test and a useless border-phase reference, and it cost a session to learn why.
+
+Once contention was removed the paper bitmap matched Fuse pixel-for-pixel every time
+(align at dx=+12, dy=−1 against a 320x240 Fuse frame: zero mismatching pixels). The
+border, though, landed in one of **three** positions across runs — −8 px, 0 and +8 px
+relative to Fuse — from the *same bitstream*. Two different builds each produced more
+than one of them, so it is not a property of the build.
+
+The reason is in the demo. It contains no `IN (C)` of any form and its only `IN A,(n)`
+is port `#FE`, the keyboard: it never reads port `#FF` or the floating bus, so it has no
+raster reference except the interrupt. `HALT` samples `INT` only at NOP boundaries, i.e.
+every 4T, so the whole frame inherits the 4T phase at which the demo first entered
+`HALT` — fixed from then on, because the frame body is a constant T-count. MiSTer starts
+a tape when it is mounted, asynchronously to the CPU; Fuse auto-plays from inside the ROM
+loader, CPU-locked, which is the *only* reason Fuse gives byte-identical frames (checked:
+three runs, two of them with tape traps off so the tape loads in real time, starts 3.4 s
+apart). A real Scorpion with a real tape is asynchronous like MiSTer.
+
+So this demo's border position is 4T-ambiguous by construction and cannot calibrate the
+ULA's border latch. A `border_d` register delaying the border one 4T slot was tried,
+looked like a fix on a single run, and was reverted once repeat runs showed the same
+build producing every position with it and without it. To settle the border phase you
+need a reference that synchronises on something deterministic — not this tape.

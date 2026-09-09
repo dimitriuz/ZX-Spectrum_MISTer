@@ -173,17 +173,10 @@ always @(posedge clk_sys) begin
 		if(INT)  INTCnt <= ((m128 && INTCnt == 71) || (~m128 && INTCnt == 63)) ? 7'd0 : (INTCnt + 1'd1);
 		if(INTCnt == 0) INT <= 0;
 
-		// The border colour is latched one 4T slot before it is displayed, in step
-		// with the attribute fetch for the cell being shown. Taking border_color at
-		// the moment AttrOut is loaded puts every border change 4T (8 pixels) early:
-		// measured against Fuse's Scorpion, every border transition in scorp_green.tap
-		// landed exactly -8px, and a blue OUT that should stay hidden behind the paper
-		// leaked into the last 8px of the left border. border_d restores the slot.
 		if(hc_next[2:0] == 4) begin
 			SRegister <= VidEN ? bits : 8'd0;
 			hiSRegister <= VidEN ? {bits, attr} : 16'd0;
-			AttrOut <= tmx_hi ? hiattr : VidEN ? attr : {2'b00,border_out,border_out};
-			border_d <= border_color;
+			AttrOut <= tmx_hi ? hiattr : VidEN ? attr : {2'b00,border_color,border_color};
 		end else begin
 			SRegister   <= {SRegister[6:0],   1'b0};
 			hiSRegister <= {hiSRegister[14:0],1'b0};
@@ -240,7 +233,6 @@ reg [15:0] hiSRegister;
 reg [14:0] vaddr;
 
 reg  [7:0] AttrOut;
-reg  [2:0] border_d = 0;   // border colour, delayed one 4T slot (Scorpion)
 
 reg        VidEN = 0;
 
@@ -249,7 +241,6 @@ reg [15:0] hibits;
 reg  [7:0] attr;
 wire [7:0] hiattr  = hipalette[tmx_cfg[5:3]];
 wire       stdpage = tmx_using_ff | ~tmx_ena;
-wire [2:0] border_out = scorp_tim ? border_d : border_color;
 wire       Pixel = tmx_hi ? hiSRegister[15] : SRegister[7] ^ (AttrOut[7] & FlashCnt[4]);
 
 assign     {I,G,R,B} = Pixel ? {AttrOut[6],AttrOut[2:0]} : {AttrOut[6],AttrOut[5:3]};

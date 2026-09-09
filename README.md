@@ -168,6 +168,8 @@ interrupt 14,336T before the first paper pixel — and differs from an ULA-48 in
 that timing-critical software depends on: there is **no contention**, neither memory nor
 I/O, so the CPU keeps a flat 3.5 MHz whatever the raster is doing. Leaving Video Timings
 on ULA-128 or Pentagon gives a Scorpion the wrong frame length and interrupt phase.
+Port **#FF** reads the ULA attribute byte, as on real hardware, unless the Beta 128 has
+claimed it; every other unattached port still reads #FF.
 
 All five boot-menu entries work, as do `RANDOMIZE USR 15616` from 128 BASIC and the Shadow Service Monitor on **F11**. Section 6 of `docs/scorpion-zs256-design.md` documents two subtle interactions worth reading before touching the Beta trap or the joystick port decode.
 

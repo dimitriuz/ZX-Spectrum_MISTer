@@ -385,12 +385,20 @@ wire [7:0] cpu_din =
 		psg_rd   ? psg_dout                                   :
 		ulap_sel ? ulap_dout                                  :
 		~addr[0] ? {1'b1, ula_tape_in, 1'b1, kbd_dout}        :
-		// Fuse gives the Scorpion machine->unattached_port =
-		// spectrum_unattached_port_none, i.e. an unattached port reads #FF rather
-		// than the floating bus, and beta_sr_read() likewise returns #FF while the
-		// interface is inactive. Returning floating-bus screen bytes here makes the
-		// Shadow Monitor's FDC status polling see plausible-but-wrong values and
-		// spin, instead of reading "not ready" and failing cleanly.
+		// Port #FF is the one exception to the Scorpion's read-#FF rule below: it is
+		// the ULA's attribute port. Fuse wires it that way for this machine -
+		// scorpion_reset() installs machines_periph_pentagon(), whose table holds
+		// { 0x00ff, 0x00ff, pentagon_select_ff_read, beta_sp_write }, and that
+		// handler reads the Beta status port first and falls back to
+		// spectrum_unattached_port(), the floating bus. Unreal's PRESET.SCORPION
+		// agrees (PortFF=1). fdd_sel above already claims #FF whenever the Beta is
+		// paged, which is the same precedence Fuse has.
+		(scorp & (addr[7:0] == 8'hFF)) ? port_ff               :
+		// Every other unattached port still reads #FF: Fuse sets the Scorpion's
+		// machine->unattached_port = spectrum_unattached_port_none, and returning
+		// floating-bus screen bytes here made the Shadow Monitor's FDC status
+		// polling see plausible-but-wrong values and spin, instead of reading
+		// "not ready" and failing cleanly.
 		scorp    ? 8'hFF                                      :
 					  port_ff;
 
@@ -901,7 +909,11 @@ wire       snow_ena = status[25] & &turbo & ~plus3;
 wire       I,R,G,B;
 wire [7:0] ulap_color;
 
-ULA ULA(.*, .din(cpu_dout), .page_ram(page_ram[2:0]));
+// tmx_avail also gates the SAA1099 chip select above, so the Scorpion carve-out
+// goes on the ULA's copy only: a real Scorpion has no Timex, #FF is the Beta system
+// port, and letting an OUT (#FF) latch tmx_using_ff would make port_ff return the
+// Timex config instead of the attribute byte.
+ULA ULA(.*, .din(cpu_dout), .page_ram(page_ram[2:0]), .tmx_avail(tmx_avail & ~scorp));
 
 wire ce_sys = ce_7mp | (mode512 & ce_7mn);
 reg ce_sys1;

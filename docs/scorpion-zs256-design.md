@@ -249,6 +249,14 @@ Monitor runs with its own ROM2 paged in, so that is the one case where the Beta
 ports win and
 everything else keeps the joystick.
 
+The decode has since been narrowed further, for an unrelated reason - the
+Kempston mouse lives at `#FADF`/`#FBDF`/`#FFDF`, low byte `#DF`, which the
+six-bit compare also matched. It is now a full low-byte compare,
+`addr[7:0] == 8'h1F`, which is Fuse's `kempston_strict_decoding`
+(`{ 0x00e0, 0x0000 }`, A7=A6=A5=0) with the low five bits kept. That drops `#5F`,
+`#9F` and `#DF` from the joystick's reach, so of the Beta ports only `#1F` still
+overlaps and the `#1FFD[1]` exception above is all that is needed.
+
 ### Why the other routes always worked
 
 **48 TR-DOS** and **`USR 15616`** enter TR-DOS directly and never execute the

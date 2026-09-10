@@ -17,6 +17,7 @@ Some verilog models from Till Harbaum [Spectrum](https://github.com/mist-devel/m
 - DivMMC with ESXDOS.
 - [Multiface 128 and Multiface 3](https://en.wikipedia.org/wiki/Multiface) (in +3 mode) add-on.
 - Memory snapshot save/load in +D and Multiface.
+- MiSTer savestates - save and resume the running machine in one of 4 slots.
 - Kempston Mouse.
 - Joysticks: Kempston, Sinclair I/II, Cursor
 - [General Sound](https://8bit.yarek.pl/interface/zx.generalsound/index.html) with 512KB-2MB of RAM
@@ -91,6 +92,45 @@ Original +D ROM requires to press additional Y/N keys in 128K mode to choose the
 
 To load snapshot, just mount IMG/MGT and go to basic prompt where type **CAT 1** to list its content. Note the number of snapshot file. Then type **LOAD pX** where X is the number of shapshot file. For other disk commands please find and read G+DOS (MGT +D) manual.
 
+### Savestates:
+Saves the running machine - RAM, CPU state, paging, border and the AY register file -
+into one of **4 slots**, and resumes it later. Files are written to
+**savestates/Spectrum/** as `<name>_1.ss` ... `<name>_4.ss`.
+
+**Savestates must be armed first.** MiSTer only sets up the save slots when a file is
+loaded through a menu entry that supports it, so:
+- Loading a tape (**Load Tape**) or a snapshot (**Load Snapshot**) arms them automatically,
+  and the savestate files are named after that file.
+- A **disk** session never loads a file that way, so pick anything under
+  **Savestate -> Savestate Target**. Nothing is loaded into the machine - the file is only
+  used to name the savestates - so any TRD/IMG/DSK/MGT/TAP will do, ideally the game you
+  are playing.
+
+Until that is done, a save attempt reports *Savestates not armed*. Arming has to be
+repeated after a core reload.
+
+Keys (right Shift only - left Shift is not the same key to the core):
+- **RShift+F1** - save to the current slot
+- **RShift+F2** - load from the current slot
+- **RShift+F3** - select the next slot (1 -> 2 -> 3 -> 4 -> 1), shown on screen
+
+The same actions are on the OSD's **Savestate** page, along with the slot selector.
+Every action reports on screen: *State saved*, *State loaded*, *Slot is empty*,
+*No savestate on this machine*, *Savestates not armed*, *Savestate timed out*.
+
+**Notes:**
+- Not supported on **Pentagon 1024K** and **Profi 1024K** - those have 64 RAM banks, more
+  than the snapshot format carries. A save there reports *No savestate on this machine*.
+- **General Sound** RAM is not part of a savestate, so GS music stops after a load.
+- Only **one AY register file** is carried. The snapshot format has room for a single
+  chip (the selected register plus its 16 values), so with **Turbosound** active the
+  second chip's registers are not saved and its channels may come back wrong after a
+  load. Plain 128K/AY music restores correctly.
+- The loader reads only IFF1 from the snapshot and mirrors it into IFF2, so a state saved
+  while the two differ - inside an NMI handler, before its RETN - can resume with
+  interrupts in the wrong state. This is a pre-existing limitation that also affects
+  ordinary .z80 loading.
+
 ### Multiface 128 and Multiface 3:
 You can enter Multiface ROM using **RShift+F11**. Multiface 128 includes preloaded debugger (Genie) where you can trace or modify the game.
 If you prefer to use bare Multiface 128 ROM then do following procedure: Press and hold **ESC**, then press **RShift+F11**.
@@ -113,6 +153,11 @@ Make sure boot1.rom and files inside VHD (or SD card) are from the same ESXDOS v
 - F11 - enter +D snapshot menu (or ROM0 menu if IMG/MGT not mounted) or DivMMC file browser.
 - RShift+F11 - enter Multiface 128 menu
 - F12 - OSD menu
+
+Savestates (see above - they must be armed first):
+- RShift+F1 - save state to the current slot
+- RShift+F2 - load state from the current slot
+- RShift+F3 - select the next savestate slot
 
 Quick switch between models:
 - Alt+F1 - ZX Spectrum 48K (48KB, ULA-48)

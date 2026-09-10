@@ -10,6 +10,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/wd1793.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/u765.sv
 set_global_assignment -name VERILOG_FILE rtl/divmmc.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram_arb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddr_cdc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ss_writer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ula.sv
 set_global_assignment -name VERILOG_FILE rtl/dpram.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape.sv

@@ -126,10 +126,10 @@ Every action reports on screen: *State saved*, *State loaded*, *Slot is empty*,
   chip (the selected register plus its 16 values), so with **Turbosound** active the
   second chip's registers are not saved and its channels may come back wrong after a
   load. Plain 128K/AY music restores correctly.
-- A state saved from inside the Scorpion **Shadow Service Monitor** (F11) may resume with
-  interrupts disabled. The snapshot format stores IFF1 and IFF2 separately but the loader
-  reads only IFF1 and mirrors it into both - a pre-existing limitation that also affects
-  ordinary .z80 loading.
+- The loader reads only IFF1 from the snapshot and mirrors it into IFF2, so a state saved
+  while the two differ - inside an NMI handler, before its RETN, as in the Scorpion
+  **Shadow Service Monitor** (F11) - can resume with interrupts in the wrong state. This
+  is a pre-existing limitation that also affects ordinary .z80 loading.
 
 ### Multiface 128 and Multiface 3:
 You can enter Multiface ROM using **RShift+F11**. Multiface 128 includes preloaded debugger (Genie) where you can trace or modify the game.

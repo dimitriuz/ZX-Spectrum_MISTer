@@ -538,7 +538,7 @@ wire [7:0] cpu_din =
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
 		mmc_sel  ? mmc_dout                                   :
-		kemp_sel ? kemp_dout                                  :
+		(kemp_sel | mouse_sel) ? kemp_dout                    :
 		portBF   ? {page_scr_copy, 7'b1111111}                :
 		gs_sel   ? gs_dout                                    :
 		psg_rd   ? psg_dout                                   :
@@ -1287,12 +1287,32 @@ wire recreated_zx = status[37];
 wire ghosting     = status[36];
 keyboard kbd( .* );
 
+wire        mouse_reg_sel;   // #FADF/#FBDF/#FFDF -> buttons/x/y, from A10:A8
 wire  [7:0] mouse_data;
-mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(), .dout(mouse_data), .btn_swap(status[35]));
+mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(mouse_reg_sel), .dout(mouse_data), .btn_swap(status[35]));
 
-// The Kempston decode is six bits wide - it answers #1F, #5F, #9F and #DF - and
-// it is unconditional, sitting below fdc_sel in the cpu_din mux, so with TR-DOS
-// paged out it also answers two of the Beta interface's own ports, #1F and #5F,
+// Kempston joystick and Kempston mouse both live at A5=0, and the only thing
+// separating them is A7/A6: the joystick is #1F (A7=A6=0), the mouse is
+// #FADF/#FBDF/#FFDF - low byte #DF, so A7=A6=1. The decode here used to be six
+// bits wide (addr[5:0] == 6'h1F), which matches #DF as well, so a single mux arm
+// served both devices and a `kemp_mode` latch arbitrated: any mouse packet
+// handed the port to the mouse, any joystick direction handed it straight back.
+// That broke both of them:
+//   - with the mouse enabled, #1F fell through to the mouse module's `default`
+//     arm and read #FF. Kempston is active high, so every game saw all four
+//     directions plus fire held down.
+//   - with the joystick in use, the mouse ports read the joystick instead.
+// Fuse separates them in the decode rather than arbitrating. joystick.c has
+// kempston_strict_decoding { 0x00e0, 0x0000 } - A7=A6=A5=0 - as the default for
+// every machine, and hands out the colliding kempston_loose_decoding
+// { 0x0020, 0x0000 } only to the Timex TC2048/TS2068, where it is authentic.
+// So each gets a full low-byte compare, and the mouse gets its own select from
+// the module's `sel` output - the A10/A9/A8 register decode, which was
+// previously left unconnected. Checked exhaustively over all 65536 ports:
+// nothing is claimed by both any more (it was 1024 addresses before).
+//
+// The joystick decode is unconditional and sits *below* fdc_sel in the cpu_din
+// mux. So with TR-DOS paged out it also answers the Beta interface's own #1F
 // with the empty joystick #00 rather than the #FF an unattached port reads.
 //
 // That matters on the Scorpion because its Shadow Service Monitor polls the
@@ -1303,19 +1323,10 @@ mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(), .dout(mouse_data
 // the TR-DOS file browser polls #0C1F constantly. #1FFD[1] separates the two -
 // only the monitor runs with its own ROM2 paged in.
 wire       beta_port = &addr[4:0] & (~addr[7] | &addr[7:5]); // #1F #3F #5F #7F #FF
-wire       kemp_sel = (addr[5:0] == 6'h1F) & ~(scorp & beta_port & scorp_1ffd[1]);
+wire       kemp_sel  = (addr[7:0] == 8'h1F) & ~(scorp & beta_port & scorp_1ffd[1]);
+wire       mouse_sel = |status[35:34] & (addr[7:0] == 8'hDF) & mouse_reg_sel;
 reg  [7:0] kemp_dout;
-reg        kemp_mode = 0;
-always @(posedge clk_sys) begin
-	reg old_status = 0;
-
-	if(reset || joyk || !status[35:34]) kemp_mode <= 0;
-
-	old_status <= ps2_mouse[24];
-	if(old_status != ps2_mouse[24] && status[35:34]) kemp_mode <= 1;
-
-	kemp_dout <= kemp_mode ? mouse_data : {2'b00, joyk};
-end
+always @(posedge clk_sys) kemp_dout <= mouse_sel ? mouse_data : {2'b00, joyk};
 
 wire [2:0] jsel  = status[19:17];
 

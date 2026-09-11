@@ -145,6 +145,7 @@ localparam CONF_STR = {
 	"O[37:36],Keyboard,Normal,Ghosting,Recreated ZX,Recr+Ghosting;",
 	"O[19:17],Joystick,Kempston,Sinclair I,Sinclair II,Sinclair I+II,Cursor;",
 	"O[35:34],Mouse,Disabled,Kempston L/R,Kempston R/L;",
+	"O[49],Mouse Wheel,Normal,Inverted;",
 	"O[6],Fast Tape Load,On,Off;",
 	"O[1],Tape Sound,On,Off;",
 	"O[24:22],CPU Speed,Original,7MHz,14MHz,28MHz,56MHz;",
@@ -1291,7 +1292,7 @@ keyboard kbd( .* );
 
 wire        mouse_reg_sel;   // #FADF/#FBDF/#FFDF -> buttons/x/y, from A10:A8
 wire  [7:0] mouse_data;
-mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(mouse_reg_sel), .dout(mouse_data), .btn_swap(status[35]));
+mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(mouse_reg_sel), .dout(mouse_data), .btn_swap(status[35]), .wheel_inv(status[49]));
 
 // Kempston joystick and Kempston mouse both live at A5=0, and the only thing
 // separating them is A7/A6: the joystick is #1F (A7=A6=0), the mouse is
